@@ -10,7 +10,7 @@ The host is the sole simulation authority. Players use Supabase anonymous authen
 - A joiner sends an SDP offer containing its display name. The host assigns a free seat and sends an answer with `{sdp, seatId, maxPlayers, localSeats}`. ICE payloads are `{candidate}`. Candidates may be queued until the remote description is set. Clients initiate ICE-restart offers for interrupted links.
 - `leaderboard`: owner UID and normalized team-name key identify a host-owned latest result. All authenticated users may read; only the row owner may modify it. Results are host-reported and not cheat-proof.
 
-Room codes are invitation secrets, not authentication. These policies do not provide membership-based authorization for signal inserts. The live database security tests pass, but stronger anti-abuse controls (including CAPTCHA/rate limits for anonymous sign-ins) and real browser multiplayer, ICE recovery, and TURN testing remain before treating the service as production-hardened.
+Room codes are invitation secrets, not authentication. These policies do not provide membership-based authorization for signal inserts. Live database security and short two-browser multiplayer tests pass, but stronger anti-abuse controls (including CAPTCHA/rate limits for anonymous sign-ins), four-player, ICE recovery, and TURN testing remain before treating the service as production-hardened.
 
 ## WebRTC channels
 
@@ -19,6 +19,7 @@ Each joiner creates three data channels on its connection to the host:
 - `input`: unordered, `maxRetransmits: 0`; client sends `{type:"input", sequence, heldKeyMask, clientTick}`. Bit values are W=1, A=2, S=4, D=8. The host filters by current seat ownership and drops excess traffic.
 - `state`: unordered and unreliable; host sends `{type:"state", snapshot, bindings, hoops}`. Snapshots include a sequence and tick, position, velocity, headings, speed, score, phase, elapsed time and remaining effect ticks. Older sequences are discarded.
 - `events`: reliable and ordered; host sends round start/end/crash, hoop batch and clear, booster and magnetic activations, seat changes, warnings and shuffle commands. `shuffle-command` includes a `BindingSet` and future `effectiveTick`. Reliable `crash` and `round-end` events are authoritative and include the final reason, tick, score, rounded distance, and hoops-cleared count; clients do not finalize results from ended state snapshots.
+- After a successful leaderboard write, the host sends `{type:"leaderboard-updated"}` so clients refresh their results leaderboard.
 
 `BindingSet` contains `playerCount`, `directionSeat`, and `directionKey`, each assigning the four directions to one seat and one W/A/S/D key. The host broadcasts the authoritative values, including future shuffle timing.
 

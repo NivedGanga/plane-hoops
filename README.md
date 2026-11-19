@@ -2,7 +2,7 @@
 
 A cooperative browser flight game: two or four pilots share one plane, one score, and W/A/S/D. The host runs the simulation and each remote pilot connects directly to the host using WebRTC.
 
-> **Work in progress:** the dedicated Supabase project has anonymous sign-in disabled and its migration has not been applied. Vercel authentication was unavailable, so a production deployment and live multiplayer/security acceptance have not been verified. See [DECISIONS.md](DECISIONS.md).
+> **Work in progress:** `plane-hoops-production` has anonymous sign-ins enabled, the migrations applied, and 22 tests passed, including live database security checks. A two-browser WebRTC connection smoke test and two lobby tests also passed locally. No Vercel production deployment is claimed; real gameplay, TURN, and long-running multi-client acceptance tests remain outstanding. See [DECISIONS.md](DECISIONS.md).
 
 ## Local setup
 
@@ -22,20 +22,20 @@ npm run test:browser    # install Playwright Chromium first: npx playwright inst
 npm run build
 ```
 
-The Vitest network test models latency and packet loss but is not a real WebRTC or TURN test. The live security tests are skipped unless `SUPABASE_URL` and `SUPABASE_ANON_KEY` are set; they require anonymous sign-ins and the migration. Do not run them against an unrelated project.
+The Vitest network test models latency and packet loss but is not a real WebRTC or TURN test. An opt-in Playwright smoke test in `tests/integration/` checks that two real browser contexts establish a WebRTC connection using the live project. The live security tests are skipped unless `SUPABASE_URL` and `SUPABASE_ANON_KEY` are set; they require anonymous sign-ins and all migrations. Do not run them against an unrelated project.
 
 ## Supabase setup
 
-1. Create a project and enable **Authentication → Sign In / Providers → Anonymous sign-ins**. Confirm `signInAnonymously()` succeeds before applying the migration.
-2. Apply `supabase/migrations/20261119000000_plane_hoops.sql` using the Supabase migration tooling. It creates `rooms`, `signals`, and `leaderboard`, RLS policies, `get_room`, the ranking index, and the Realtime publication entry. Optional `pg_cron` signal cleanup is enabled only if the extension and permissions exist.
+1. For a fresh environment, enable **Authentication → Sign In / Providers → Anonymous sign-ins** and confirm `signInAnonymously()` succeeds before applying migrations. This setting is already enabled on the dedicated `plane-hoops-production` project.
+2. Apply all SQL files in `supabase/migrations/` in filename order using Supabase migration tooling. The production project's migration history is aligned with these files. They create `rooms`, `signals`, and `leaderboard`, RLS policies, `get_room`, the ranking index, and the Realtime publication entry. Optional `pg_cron` signal cleanup is enabled only if the extension and permissions exist.
 3. Set `VITE_SUPABASE_URL` to the project URL and `VITE_SUPABASE_ANON_KEY` to its public publishable or legacy anon key. All database and Realtime operations require an authenticated anonymous session. RLS, not secrecy of the public key, is the access-control boundary.
-4. Run the security advisor and the live security tests using the project URL and public key. Check any [Supabase security-advisor guidance](https://supabase.com/docs/guides/database/database-linter) before deploying.
+4. Run the security advisor and live security tests using the project URL and public key. The dedicated project's full suite passed 22/22 tests. The live suite creates anonymous test users that remain in Auth after sign-out, so remove test accounts after each run if a clean project is desired. Check [Supabase security-advisor guidance](https://supabase.com/docs/guides/database/database-linter) and review its anonymous-access and `get_room` warnings before a broad public launch.
 
 Supabase free-tier projects can pause after inactivity, taking the game offline until the project is restored. The host reports scores; cheating prevention is not provided.
 
 ## Vercel and TURN
 
-Import the GitHub repository into Vercel using the Vite preset, select `main` as the production branch, and set `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`. Pull requests should receive preview deployments. The static app is served by Vercel; `api/turn.ts` obtains time-limited TURN credentials server-side.
+Import the GitHub repository into a separate Vercel project using the Vite preset, select `supabase-implementation` as its production branch, and set `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`. The repository's `main` branch contains a separate Firebase implementation; do not overwrite or deploy it as this Supabase app. Pull requests should receive preview deployments. The static app is served by Vercel; `api/turn.ts` obtains time-limited TURN credentials server-side. This Supabase deployment has not yet been created or verified.
 
 The selected provider is [Metered Open Relay](https://www.metered.ca/tools/openrelay/), which advertises a free monthly allowance. Set `METERED_DOMAIN` (for example `example.metered.live`) and `METERED_SECRET_KEY` as **server-only** Vercel environment variables. The endpoint requests a four-hour credential using Metered's [expiring-credential API](https://www.metered.ca/docs/turnserver-guides/expiring-turn-credentials/); no provider secret is bundled in the browser. Metered warns that newly minted credentials can take up to two minutes to propagate and expire even in an active session. Rotating them and validating relay-only long games are outstanding production tasks.
 

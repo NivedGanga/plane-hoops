@@ -3,6 +3,7 @@
 - Project is dedicated to this game in the only connected Supabase organization, in `ap-south-1`; the connector quoted $0/month.
 - Supabase anonymous sign-in is required for the requested security model; it is currently disabled and could not be enabled through the available connector or an unauthenticated dashboard session. Migrations were not applied because the specification requires confirming this setting first.
 - The public GitHub repository is `NivedGanga/plane-hoops`; the Vercel connector reported no stored authentication and no unattended deployment credential was available, so no production deployment is claimed.
+- While pushing the final work, `main` was independently force-updated to a different Firebase implementation with unrelated history. To avoid overwriting that work, this Supabase implementation is preserved on `supabase-implementation`, not the default branch.
 - The GitHub Actions CI job did not start: GitHub reported the account is locked due to a billing issue. Local typecheck, tests and build passed, but this is not a passing remote CI run.
 - Metered Open Relay is the planned free-tier TURN provider, with server-only `METERED_DOMAIN` and `METERED_SECRET_KEY`; its published free allowance is 20 GB/month. No credentials were available, so STUN-only is the fallback and some networks cannot connect.
 - Metered notes that fresh credentials can take up to two minutes to propagate and expire during ongoing sessions; production TURN rotation and long-session behavior need validation before relying on the fallback-resistant relay.

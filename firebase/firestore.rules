@@ -1,0 +1,215 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: /rooms/{code}
+    // Document ID: Room code (e.g. 6-character room code)
+    // Fields:
+    //   - hostUid: string (required, immutable) - UID of the host creating/managing the room
+    //   - name: string (required, 1 to 24 chars) - Room display name
+    //   - size: int (required, allowed: 2 or 4) - Maximum player capacity
+    //   - status: string (required, allowed: "lobby", "playing", "closed") - Room lifecycle status
+    //   - runCount: int / number (optional, >= 0) - Optional counter for game runs
+    //   - createdAt: timestamp or number (optional) - Creation timestamp
+    //
+    // Collection: /rooms/{code}/signals/{id}
+    // Document ID: Unique WebRTC signal identifier
+    // Fields:
+    //   - from: string (required, must match request.auth.uid) - Sender UID
+    //   - to: string (optional on create, 1 to 128 chars) - Intended recipient UID
+    //   - kind: string (required, allowed: "offer", "answer", "ice") - Signal message type
+    //   - payload: string or map (optional) - SDP / ICE candidate payload
+    //   - createdAt: timestamp or number (optional) - Creation timestamp
+    //
+    // Collection: /leaderboard/{entryId}
+    // Document ID: Strict format: ownerUid + "__" + nameKey
+    // Fields:
+    //   - ownerUid: string (required, immutable, must match request.auth.uid) - Score owner UID
+    //   - teamName: string (required, 1 to 24 chars) - Team display name
+    //   - nameKey: string (required, 1 to 24 chars) - Key component of the entryId
+    //   - members: list (required, 1 to 4 items, each a string of 1 to 16 chars) - Player names
+    //   - points: number (required, >= 0) - Points scored
+    //   - hoopsCleared: number (required, >= 0) - Hoops cleared
+    //   - distanceM: number (required, >= 0) - Distance flown in meters
+    //   - updatedAt: timestamp or number (optional) - Timestamp of last score update
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    // ---------------------------------------------------------------
+    // Room Validators
+    // ---------------------------------------------------------------
+
+    function isValidRoom(data) {
+      return data.keys().hasAll(['hostUid', 'name', 'size', 'status']) &&
+             data.keys().hasOnly(['hostUid', 'name', 'size', 'status', 'runCount', 'createdAt']) &&
+             data.hostUid is string &&
+             data.hostUid.size() > 0 &&
+             data.hostUid.size() <= 128 &&
+             data.name is string &&
+             data.name.size() >= 1 &&
+             data.name.size() <= 24 &&
+             data.size in [2, 4] &&
+             data.status in ['lobby', 'playing', 'closed'] &&
+             (!('runCount' in data) || (data.runCount is number && data.runCount >= 0)) &&
+             (!('createdAt' in data) || data.createdAt is timestamp || data.createdAt is number);
+    }
+
+    // ---------------------------------------------------------------
+    // Signal Validators
+    // ---------------------------------------------------------------
+
+    function isValidSignal(data) {
+      return data.keys().hasAll(['from', 'kind']) &&
+             data.keys().hasOnly(['from', 'to', 'kind', 'payload', 'createdAt']) &&
+             data.from is string &&
+             data.from.size() > 0 &&
+             data.from.size() <= 128 &&
+             data.kind in ['offer', 'answer', 'ice'] &&
+             (!('to' in data) || (data.to is string && data.to.size() >= 1 && data.to.size() <= 128)) &&
+             (!('payload' in data) || (data.payload is string && data.payload.size() <= 65536) || data.payload is map) &&
+             (!('createdAt' in data) || data.createdAt is timestamp || data.createdAt is number);
+    }
+
+    // ---------------------------------------------------------------
+    // Leaderboard Validators
+    // ---------------------------------------------------------------
+
+    function isValidMember(val) {
+      return val is string &&
+             val.size() >= 1 &&
+             val.size() <= 16;
+    }
+
+    function areValidMembers(members) {
+      return members is list &&
+             members.size() >= 1 &&
+             members.size() <= 4 &&
+             isValidMember(members[0]) &&
+             (members.size() < 2 || isValidMember(members[1])) &&
+             (members.size() < 3 || isValidMember(members[2])) &&
+             (members.size() < 4 || isValidMember(members[3]));
+    }
+
+    function isValidLeaderboardEntry(data) {
+      return data.keys().hasAll(['ownerUid', 'teamName', 'nameKey', 'members', 'points', 'hoopsCleared', 'distanceM']) &&
+             data.keys().hasOnly(['ownerUid', 'teamName', 'nameKey', 'members', 'points', 'hoopsCleared', 'distanceM', 'updatedAt']) &&
+             data.ownerUid is string &&
+             data.ownerUid.size() > 0 &&
+             data.ownerUid.size() <= 128 &&
+             data.teamName is string &&
+             data.teamName.size() >= 1 &&
+             data.teamName.size() <= 24 &&
+             data.nameKey is string &&
+             data.nameKey.size() >= 1 &&
+             data.nameKey.size() <= 24 &&
+             data.points is number &&
+             data.points >= 0 &&
+             data.hoopsCleared is number &&
+             data.hoopsCleared >= 0 &&
+             data.distanceM is number &&
+             data.distanceM >= 0 &&
+             areValidMembers(data.members) &&
+             (!('updatedAt' in data) || data.updatedAt is timestamp || data.updatedAt is number);
+    }
+
+    // ===============================================================
+    // Collection Rules
+    // ===============================================================
+
+    // ---------------------------------------------------------------
+    // Rooms Collection
+    // ---------------------------------------------------------------
+    match /rooms/{code} {
+      // Anyone signed in can get a room by code
+      allow get: if isAuthenticated();
+
+      // Listing rooms is denied
+      allow list: if false;
+
+      // Only authenticated users can create a room; hostUid must match auth.uid
+      allow create: if isAuthenticated() &&
+                       request.resource.data.hostUid == request.auth.uid &&
+                       isValidRoom(request.resource.data);
+
+      // Only host can update the room; hostUid cannot be changed
+      allow update: if isAuthenticated() &&
+                       resource.data.hostUid == request.auth.uid &&
+                       request.resource.data.hostUid == resource.data.hostUid &&
+                       isValidRoom(request.resource.data);
+
+      // Only host can delete the room
+      allow delete: if isAuthenticated() &&
+                       resource.data.hostUid == request.auth.uid;
+
+      // -------------------------------------------------------------
+      // Signals Subcollection (WebRTC signaling between peers)
+      // -------------------------------------------------------------
+      match /signals/{id} {
+        // Recipient can read (get and list) signals directed to them
+        allow get, list: if isAuthenticated() &&
+                            resource.data.to == request.auth.uid;
+
+        // Any authenticated user can create a signal if from matches auth.uid
+        allow create: if isAuthenticated() &&
+                         request.resource.data.from == request.auth.uid &&
+                         isValidSignal(request.resource.data);
+
+        // Signals cannot be updated
+        allow update: if false;
+
+        // Recipient can delete a signal after consuming it
+        allow delete: if isAuthenticated() &&
+                         resource.data.to == request.auth.uid;
+      }
+    }
+
+    // ---------------------------------------------------------------
+    // Leaderboard Collection
+    // ---------------------------------------------------------------
+    match /leaderboard/{entryId} {
+      // Any signed-in user can read (both get and list) leaderboard entries
+      allow read: if isAuthenticated();
+
+      // Owner can create entry with matching entryId pattern
+      allow create: if isAuthenticated() &&
+                       request.resource.data.ownerUid == request.auth.uid &&
+                       entryId == request.resource.data.ownerUid + "__" + request.resource.data.nameKey &&
+                       isValidLeaderboardEntry(request.resource.data);
+
+      // Owner can update entry with matching entryId pattern; ownerUid cannot change
+      allow update: if isAuthenticated() &&
+                       resource.data.ownerUid == request.auth.uid &&
+                       request.resource.data.ownerUid == resource.data.ownerUid &&
+                       entryId == request.resource.data.ownerUid + "__" + request.resource.data.nameKey &&
+                       isValidLeaderboardEntry(request.resource.data);
+
+      // Owner can delete their leaderboard entry
+      allow delete: if isAuthenticated() &&
+                       resource.data.ownerUid == request.auth.uid;
+    }
+
+    // ---------------------------------------------------------------
+    // Default Deny
+    // ---------------------------------------------------------------
+    // Deny all reads and writes to any unspecified path
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

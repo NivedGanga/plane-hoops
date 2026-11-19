@@ -7,6 +7,11 @@ test.skip(!enabled, 'Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to run aga
 test('two browser clients join through Supabase signaling and establish WebRTC data channel', async ({ browser }) => {
   const hostContext = await browser.newContext();
   const guestContext = await browser.newContext();
+  // The signaling and game remain live, but a smoke test must not publish a dummy score.
+  await hostContext.route('**/rest/v1/leaderboard*', async route => {
+    if (route.request().method() === 'POST') await route.fulfill({ status: 201, body: '' });
+    else await route.continue();
+  });
   const host = await hostContext.newPage();
   const guest = await guestContext.newPage();
   const hostErrors: string[] = [];

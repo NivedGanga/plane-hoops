@@ -83,6 +83,7 @@ export class PlaneHoopsApp {
   private roomName = '';
   private hostUid?: string;
   private endReason: 'crash' | 'host_ended' | 'connection_lost' = 'crash';
+  private roundFinished = false;
 
   constructor(private root: HTMLElement) {
     const canvasHost = root.querySelector<HTMLElement>('#world');
@@ -125,6 +126,7 @@ export class PlaneHoopsApp {
       const input = event.currentTarget as HTMLInputElement; input.value = input.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6);
     });
     this.root.querySelector<HTMLButtonElement>('#restart-button')?.addEventListener('click', () => { if (this.room?.isHost) this.beginRound(); });
+    this.root.querySelector<HTMLButtonElement>('#return-lobby-button')?.addEventListener('click', () => this.returnToLobby());
     this.root.querySelector<HTMLButtonElement>('#end-run-button')?.addEventListener('click', () => { if (this.room?.isHost && this.state.phase === 'playing') { this.endReason='host_ended'; this.state={...this.state,phase:'ended'}; this.finishRound(false); } });
     this.root.querySelector<HTMLButtonElement>('#leave-button')?.addEventListener('click', () => this.leaveRoom());
   }
@@ -205,7 +207,7 @@ export class PlaneHoopsApp {
       this.broadcastEvent({ type: 'seat-joined', seatId: event.seatId, name: event.name }); return;
     }
     if (event.type === 'peer-left' && this.room?.isHost) {
-      this.peerMesh?.closePeer(event.peerId); this.names.delete(event.seatId); this.remoteMasks.delete(event.seatId); this.updateLobbyRoom();
+      this.peerMesh?.closePeer(event.peerId); this.names.delete(event.seatId); this.remoteMasks.delete(event.seatId); this.peerStatuses.delete(event.seatId); this.updateLobbyRoom();
       this.broadcastEvent({ type: 'seat-left', seatId: event.seatId });
       if (this.state.phase === 'playing') this.pauseForRecovery(event.seatId);
       return;
@@ -254,6 +256,7 @@ export class PlaneHoopsApp {
     this.seed = crypto.getRandomValues(new Uint32Array(1))[0] || 1;
     this.random = new SeededRandom(this.seed);
     this.state = startRound(createPlaneState());
+    this.roundFinished = false;
     this.endReason = 'crash';
     this.bindings = initialBindings(this.room.playerCount);
     this.pendingShuffle = null;
@@ -374,14 +377,16 @@ export class PlaneHoopsApp {
 
   private receiveState(packet: StatePacket): void {
     if (!this.room || this.room.isHost) return;
+    if (this.roundFinished) return;
     this.previousSnapshot = this.latestSnapshot; this.latestSnapshot = packet.snapshot;
     this.hoops = packet.hoops;
     if (packet.snapshot.tick >= (this.pendingShuffle?.effectiveTick ?? Number.MAX_SAFE_INTEGER)) {
       if (this.pendingShuffle) { this.bindings = this.pendingShuffle.bindings; this.pendingShuffle = null; }
     }
-    if (packet.snapshot.phase === 'ended' && this.state.phase !== 'ended') {
-      this.state = snapshotToPlane(packet.snapshot); this.finishRound(false);
-    } else if (packet.snapshot.phase !== 'paused') this.state = snapshotToPlane(packet.snapshot);
+    if (packet.snapshot.phase === 'ended') {
+      // State is unreliable; the ordered terminal event owns final results.
+      if (!this.roundFinished) this.state = snapshotToPlane(packet.snapshot);
+    } else if (packet.snapshot.phase !== 'paused' && !this.roundFinished) this.state = snapshotToPlane(packet.snapshot);
     else this.state = { ...this.state, phase: 'paused' };
     this.bindings = packet.snapshot.tick === 0 ? packet.bindings : this.bindings;
   }
@@ -389,7 +394,7 @@ export class PlaneHoopsApp {
   private receiveGameEvent(event: GameEvent): void {
     if (this.room?.isHost) return;
     if (event.type === 'round-start') {
-      this.seed = event.seed; this.bindings = event.bindings; this.state = startRound(createPlaneState());
+      this.seed = event.seed; this.bindings = event.bindings; this.state = startRound(createPlaneState()); this.roundFinished = false;
       this.pendingShuffle = null; this.hoops = []; this.hoopClears = 0; this.shuffleCount = 0; this.remoteInputSequences.clear(); this.remoteInputTimes.clear();
       this.root.querySelector('#lobby-wrap')?.classList.add('hidden'); this.root.querySelector('#result-overlay')?.classList.add('hidden');
       this.root.querySelector('#game-hud')?.classList.remove('hidden'); this.statusText = 'In flight';
@@ -400,9 +405,10 @@ export class PlaneHoopsApp {
     } else if (event.type === 'shuffle-command') {
       this.pendingShuffle = { bindings: event.bindings, effectiveTick: event.effectiveTick };
     } else if (event.type === 'round-end' || event.type === 'crash') {
-      this.endReason = event.type === 'crash' ? 'crash' : event.reason ?? 'host_ended';
-      this.state = { ...this.state, phase: 'ended', score: event.score, tick: event.tick };
-      this.finishRound(false);
+      if (this.roundFinished) return;
+      this.endReason = event.reason; this.hoopClears = event.hoopsCleared;
+      this.state = { ...this.state, phase: 'ended', score: event.score, tick: event.tick, z: event.distance };
+      this.finishRound(event.type === 'crash');
     } else if (event.type === 'seat-joined') { this.names.set(event.seatId, event.name); this.updateSeatHud(); }
     else if (event.type === 'seat-left') { this.names.delete(event.seatId); this.updateSeatHud(); }
   }
@@ -439,10 +445,14 @@ export class PlaneHoopsApp {
   }
 
   private finishRound(crashed: boolean): void {
+    if (this.roundFinished) return;
+    this.roundFinished = true;
     const score = this.state.score;
     if (this.room?.isHost) {
-      if (!crashed && this.endReason === 'host_ended') this.broadcastEvent({ type: 'round-end', tick: this.state.tick, score });
-      else this.broadcastEvent(crashed ? { type: 'crash', tick: this.state.tick, score } : { type: 'round-end', tick: this.state.tick, score, reason: this.endReason === 'connection_lost' ? 'connection_lost' : 'host_ended' });
+      const distance = Math.max(0, Math.round(this.state.z));
+      const hoopsCleared = this.hoopClears;
+      if (crashed || this.endReason === 'crash') this.broadcastEvent({ type: 'crash', reason: 'crash', tick: this.state.tick, score, distance, hoopsCleared });
+      else this.broadcastEvent({ type: 'round-end', tick: this.state.tick, score, reason: this.endReason, distance, hoopsCleared });
       this.signaling?.send({ type: 'room-status', phase: 'ended' });
     }
     this.state = { ...this.state, phase: 'ended' };
@@ -457,8 +467,22 @@ export class PlaneHoopsApp {
     if (this.room?.isHost && this.endReason !== 'connection_lost' && this.hostUid) void submitRun(this.hostUid, this.roomName, [...this.names.values()].slice(0,4), score, this.hoopClears, distance).then(()=>this.showToast('Leaderboard record saved.')).catch(e=>console.warn('Leaderboard write failed',e));
     void this.renderLeaderboard();
     this.root.querySelector('#restart-button')?.classList.toggle('hidden', !this.room?.isHost);
+    this.root.querySelector('#return-lobby-button')?.classList.toggle('hidden', !this.room?.isHost);
     this.root.querySelector('#end-run-button')?.classList.add('hidden');
     this.root.querySelector('#result-overlay')?.classList.remove('hidden');
+  }
+
+  private returnToLobby(): void {
+    if (!this.room?.isHost || !this.roundFinished) return;
+    if (this.recoveryTimer) window.clearTimeout(this.recoveryTimer);
+    this.state = { ...this.state, phase: 'lobby' };
+    this.signaling?.send({ type: 'room-status', phase: 'lobby' });
+    this.root.querySelector('#result-overlay')?.classList.add('hidden');
+    this.root.querySelector('#game-hud')?.classList.add('hidden');
+    this.root.querySelector('#lobby-wrap')?.classList.remove('hidden');
+    this.root.querySelector('#restart-button')?.classList.add('hidden');
+    this.roundFinished = false;
+    this.updateLobbyRoom();
   }
 
   private async renderLeaderboard(): Promise<void> { const node=this.root.querySelector<HTMLElement>('#top-leaderboard'); if(!node)return; try { const uid=await authenticateLeaderboard(); if(!uid){node.textContent='Sign in to view the leaderboard.';return;} const rows=rankLeaderboard(await fetchTop20()); node.innerHTML='<div class="leader-row"><strong>Rank · Team name</strong><strong>Record</strong></div>'+rows.map((row,i)=>`<div class="leader-row"><span>${i+1}. ${escapeHtml(row.team_name)} · ${escapeHtml(row.members.join(', '))}</span><strong>${row.points.toLocaleString()} pts (${row.hoops_cleared} hoops)</strong></div>`).join(''); } catch { node.textContent='Leaderboard unavailable.'; } }

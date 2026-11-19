@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Plane & Hoops - Cooperative WebRTC Flight</title>
+    <link rel="stylesheet" href="/src/ui/styles.css" />
+  </head>
+  <body>
+    <!-- Three.js 3D Canvas -->
+    <div id="canvas-container"></div>
+
+    <!-- In-Game Flight HUD -->
+    <div id="hud-overlay" style="display: none;">
+      <div class="hud-top-bar">
+        <div class="hud-stat-box">
+          <div class="hud-lbl">Airspeed</div>
+          <div class="hud-val"><span id="hud-speed">210</span> <span style="font-size: 1rem; color: #94a3b8;">km/h</span></div>
+        </div>
+        <div class="hud-stat-box" style="text-align: center;">
+          <div class="hud-lbl">Team Score</div>
+          <div class="hud-val" id="hud-score" style="color: #00f0ff;">0</div>
+        </div>
+        <div class="hud-stat-box" style="text-align: right;">
+          <div class="hud-lbl">Hoops Cleared</div>
+          <div class="hud-val" id="hud-hoops" style="color: #00ff88;">0</div>
+        </div>
+        <div class="hud-stat-box" style="text-align: right;">
+          <div class="hud-lbl">Distance</div>
+          <div class="hud-val"><span id="hud-distance">0</span> <span style="font-size: 1rem; color: #94a3b8;">m</span></div>
+        </div>
+      </div>
+
+      <div class="hud-center-banner">
+        <div id="shuffle-warning-banner" class="shuffle-banner" style="display: none;">
+          CONTROLS SHUFFLE IN <span id="shuffle-countdown">3</span>s!
+        </div>
+        <div id="boost-badge" class="notice-box" style="display: none; background: rgba(0,255,136,0.2); border-color: #00ff88; color: #00ff88;">
+          ⚡ SPEED BOOST ACTIVE (+40 km/h)
+        </div>
+        <div id="magnetic-badge" class="notice-box" style="display: none; background: rgba(191,0,255,0.2); border-color: #bf00ff; color: #e9b3ff;">
+          🧲 MAGNETIC PULL: <span id="magnetic-dir">LEFT</span> (COUNTER-STEER!)
+        </div>
+      </div>
+
+      <div class="hud-bottom-bar">
+        <div class="key-bindings-hud">
+          <div style="font-size: 0.8rem; text-transform: uppercase; color: #94a3b8; margin-right: 8px; display: flex; align-items: center;">
+            <span id="hud-seat-label">P1 CONTROLS:</span>
+          </div>
+          <div id="hud-keys-container" style="display: flex; gap: 14px;">
+            <!-- Rendered dynamically -->
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- UI Overlays (Lobby & Results) -->
+    <div id="ui-container"></div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

@@ -141,7 +141,9 @@ function runMultiplayerSyncTest(playerCount: 2 | 4, totalTicks: number) {
     if (events.hoopCleared) {
       net.send(tick, "events", {
         type: "hoop_cleared",
-        ...events.hoopCleared,
+        hoopId: events.hoopCleared.hoopId,
+        hoopType: events.hoopCleared.type,
+        points: events.hoopCleared.pointsAwarded,
         totalScore: hostState.score,
       });
     }

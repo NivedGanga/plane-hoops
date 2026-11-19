@@ -7,3 +7,5 @@ dist/
 firebase-debug.log*
 .DS_Store
 *.local
+.vercel
+.env*

@@ -10,7 +10,7 @@ function code(): string { const b = crypto.getRandomValues(new Uint8Array(ROOM_C
 function kindOf(d: SignalData): Row['kind'] | undefined { if ('type' in d && (d.type === 'offer' || d.type === 'answer')) return d.type; if (!('type' in d) || !d.type) return 'ice'; return undefined; }
 export class SupabaseSignalingClient {
   private client: SupabaseClient; private channel?: RealtimeChannel; private room?: Room; private uid?: string;
-  private listeners = new Set<(e: ClientEvent) => void>(); private queue: SignalingMessage[] = []; private seen = new Set<number>(); private closed = false; private serial: Promise<void> = Promise.resolve();
+  private listeners = new Set<(e: ClientEvent) => void>(); private queue: SignalingMessage[] = []; private seen = new Set<number>(); private closed = false; private serial: Promise<void> = Promise.resolve(); private leaveTask?: Promise<void>;
   constructor(url: string, key: string) { this.client = createClient(url, key); }
   onEvent(fn: (e: ClientEvent) => void): () => void { this.listeners.add(fn); return () => this.listeners.delete(fn); }
   private emit(e: ClientEvent): void { for (const fn of this.listeners) fn(e); }
@@ -29,7 +29,7 @@ export class SupabaseSignalingClient {
     const r = await this.client.auth.signInAnonymously(); if (r.error || !r.data.user) throw r.error ?? new Error('Anonymous sign-in failed'); return this.uid = r.data.user.id;
   }
   private async activate(r: Room): Promise<void> {
-    this.room = r; this.closed = false; this.seen.clear();
+    this.room = r; this.closed = false; this.leaveTask = undefined; this.seen.clear();
     const c = this.client.channel(`signals-${r.uid}`); this.channel = c;
     c.on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'signals', filter: `to_uid=eq.${r.uid}` }, p => { this.serial = this.serial.then(() => this.consume(p.new as Row)).catch(e => this.emit({ type: 'error', message: String(e) })); });
     await new Promise<void>((ok, no) => c.subscribe((s, e) => { if (s === 'SUBSCRIBED') ok(); if (['CHANNEL_ERROR', 'TIMED_OUT', 'CLOSED'].includes(s)) no(e ?? Error(`Realtime ${s}`)); }));
@@ -102,10 +102,14 @@ export class SupabaseSignalingClient {
       this.emit({ type: 'joined-room', roomCode, seatId: 0, maxPlayers: Number(row.size) as 2 | 4, localSeats: 1, hostPeerId: hostUid });
     } catch (e) { this.emit({ type: 'error', message: String(e) }); }
   }
-  private async leave(): Promise<void> {
-    const r = this.room; if (!r) return; this.closed = true;
-    try { if (r.role === 'host') { const u = await this.client.from('rooms').update({ status: 'closed' }).eq('code', r.code).eq('host_uid', r.uid); if (u.error) this.emit({ type: 'error', message: u.error.message }); const d = await this.client.from('rooms').delete().eq('code', r.code).eq('host_uid', r.uid); if (d.error) this.emit({ type: 'error', message: d.error.message }); } }
-    finally { await this.shutdown(); }
+  private leave(): Promise<void> {
+    if (this.leaveTask) return this.leaveTask;
+    const r = this.room; if (!r) return Promise.resolve(); this.closed = true;
+    this.leaveTask = (async () => {
+      try { if (r.role === 'host') { const u = await this.client.from('rooms').update({ status: 'closed' }).eq('code', r.code).eq('host_uid', r.uid); if (u.error) this.emit({ type: 'error', message: u.error.message }); const d = await this.client.from('rooms').delete().eq('code', r.code).eq('host_uid', r.uid); if (d.error) this.emit({ type: 'error', message: d.error.message }); } }
+      finally { await this.shutdown(); }
+    })();
+    return this.leaveTask;
   }
   private async shutdown(): Promise<void> { this.closed = true; try { await this.channel?.unsubscribe(); } catch { /* best effort */ } if (this.channel) await this.client.removeChannel(this.channel); this.channel = undefined; this.room = undefined; this.seen.clear(); this.queue = []; }
   close(): void { void this.leave(); }

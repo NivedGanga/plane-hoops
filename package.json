@@ -1,0 +1,26 @@
+{
+  "name": "plane-hoops",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "build": "tsc -b && vite build",
+    "typecheck": "tsc -b",
+    "test:browser": "playwright test"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.57.4",
+    "three": "^0.180.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.65.1",
+    "@types/node": "^22.15.0",
+    "@types/three": "^0.180.0",
+    "typescript": "~5.8.3",
+    "vite": "^6.3.5",
+    "vitest": "^5.1.1"
+  }
+}

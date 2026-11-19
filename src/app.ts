@@ -55,6 +55,7 @@ export class PlaneHoopsApp {
   private peerMesh?: PeerMesh;
   private room?: RoomInfo;
   private names = new Map<number, string>();
+  private localSeatNames: string[] = [];
   private seed = 0;
   private random = new SeededRandom(1);
   private state = createPlaneState();
@@ -115,7 +116,9 @@ export class PlaneHoopsApp {
       if (local) local.innerHTML = count === 2
         ? '<option value="1">1 local pilot · others join online</option><option value="2">2 local pilots · shared keyboard</option>'
         : '<option value="1">1 local pilot · others join online</option><option value="2">2 local pilots · shared keyboard</option><option value="3">3 local pilots · shared keyboard</option><option value="4">4 local pilots · shared keyboard</option>';
+      this.renderLocalSeatInputs();
     }));
+    this.root.querySelector<HTMLSelectElement>('#local-seats')?.addEventListener('change', () => this.renderLocalSeatInputs());
     this.root.querySelector<HTMLButtonElement>('#create-room')?.addEventListener('click', () => this.createRoom());
     this.root.querySelector<HTMLButtonElement>('#join-room')?.addEventListener('click', () => this.joinRoom());
     this.root.querySelector<HTMLInputElement>('#room-code-input')?.addEventListener('input', (event) => {
@@ -124,6 +127,12 @@ export class PlaneHoopsApp {
     this.root.querySelector<HTMLButtonElement>('#restart-button')?.addEventListener('click', () => { if (this.room?.isHost) this.beginRound(); });
     this.root.querySelector<HTMLButtonElement>('#end-run-button')?.addEventListener('click', () => { if (this.room?.isHost && this.state.phase === 'playing') { this.endReason='host_ended'; this.state={...this.state,phase:'ended'}; this.finishRound(false); } });
     this.root.querySelector<HTMLButtonElement>('#leave-button')?.addEventListener('click', () => this.leaveRoom());
+  }
+
+  private renderLocalSeatInputs(): void {
+    const count = Number(this.root.querySelector<HTMLSelectElement>('#local-seats')?.value ?? 1);
+    const target = this.root.querySelector<HTMLElement>('#local-seat-names');
+    if (target) target.innerHTML = Array.from({ length: count - 1 }, (_, i) => `<label class="field-label" for="local-name-${i + 2}">Pilot ${i + 2} display name</label><input class="field" id="local-name-${i + 2}" maxlength="16" value="Pilot ${i + 2}" />`).join('');
   }
 
   private async createRoom(): Promise<void> {
@@ -136,6 +145,8 @@ export class PlaneHoopsApp {
     try { this.hostUid = await authenticateLeaderboard(); } catch (error) { console.warn('Leaderboard authentication failed', error); }
     const selected = Number(this.root.querySelector<HTMLElement>('[data-count].selected')?.dataset.count ?? 2) as 2 | 4;
     const localSeats = Number(this.root.querySelector<HTMLSelectElement>('#local-seats')?.value ?? 1);
+    this.localSeatNames = [hostName, ...Array.from({ length: localSeats - 1 }, (_, i) => this.root.querySelector<HTMLInputElement>(`#local-name-${i + 2}`)?.value.trim() ?? '')];
+    if (this.localSeatNames.some(name => name.length < 1 || name.length > 16)) { this.showError('Every local pilot name must be 1–16 characters.'); return; }
     if (!this.prepareSignaling()) return;
     this.signaling?.send({ type: 'create-room', maxPlayers: selected, localSeats, name: roomName });
     this.statusText = 'Creating room…'; this.showToast('Connecting to the room service…');
@@ -178,7 +189,7 @@ export class PlaneHoopsApp {
     if (event.type === 'error') { this.showError(event.message); this.hideToast(); return; }
     if (event.type === 'room-created') {
       this.room = { code: event.roomCode, playerCount: event.maxPlayers, localSeats: event.localSeats, isHost: true, seatId: null };
-      this.names.clear(); for (let seat = 1; seat <= event.localSeats; seat++) this.names.set(seat, seat === 1 ? (this.root.querySelector<HTMLInputElement>('#host-name-input')?.value.trim() || 'Host') : `${this.root.querySelector<HTMLInputElement>('#host-name-input')?.value.trim() || 'Host'} ${seat}`);
+      this.names.clear(); for (let seat = 1; seat <= event.localSeats; seat++) this.names.set(seat, this.localSeatNames[seat - 1] ?? `Pilot ${seat}`);
       this.peerMesh = this.makePeerMesh(true); this.statusText = 'Room open'; this.updateLobbyRoom(); this.hideToast(); return;
     }
     if (event.type === 'joined-room') {

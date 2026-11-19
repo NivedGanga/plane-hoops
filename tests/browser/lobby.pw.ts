@@ -8,6 +8,9 @@ test('lobby validates names and renders only 2 or 4 seats', async ({ page }) => 
   await expect(page.locator('[data-count]')).toHaveCount(2);
   await page.getByRole('button', { name: /4 pilots/ }).click();
   await expect(page.locator('#local-seats option')).toHaveCount(4);
+  await page.locator('#local-seats').selectOption('3');
+  await expect(page.getByLabel('Pilot 2 display name')).toHaveValue('Pilot 2');
+  await expect(page.getByLabel('Pilot 3 display name')).toHaveValue('Pilot 3');
   await page.getByRole('button', { name: /2 pilots/ }).click();
   await expect(page.locator('#local-seats option')).toHaveCount(2);
 });

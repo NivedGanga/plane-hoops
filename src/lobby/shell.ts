@@ -16,6 +16,7 @@ export function mountShell(root: HTMLElement): void {
             <div class="option-row"><button class="choice selected" data-count="2"><strong>2 pilots</strong><small>Fast & nimble</small></button><button class="choice" data-count="4"><strong>4 pilots</strong><small>Full flight deck</small></button></div>
             <label class="field-label" for="local-seats">Seats on this keyboard</label>
             <select class="select" id="local-seats"><option value="1">1 local pilot · others join online</option><option value="2">2 local pilots · shared keyboard</option></select>
+            <div id="local-seat-names"></div>
             <button class="button" id="create-room">Create flight room</button>
             <div class="helper">Your browser hosts the flight simulation. Invite the rest of the crew with a six-character room code.</div>
           </div>

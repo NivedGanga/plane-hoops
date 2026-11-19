@@ -23,8 +23,8 @@ export type GameEvent =
   | { type: 'hoop-cleared'; hoopId: number; hoopType: Hoop['type']; score: number; tick: number }
   | { type: 'booster-activated'; untilTick: number; score: number; tick: number }
   | { type: 'magnetic-activated'; direction: NonNullable<Hoop['arrow']>; untilTick: number; score: number; tick: number }
-  | { type: 'crash'; tick: number; score: number }
-  | { type: 'round-end'; score: number; tick: number; reason?: 'host_ended' | 'connection_lost' }
+  | { type: 'crash'; tick: number; score: number; reason: 'crash'; distance: number; hoopsCleared: number }
+  | { type: 'round-end'; score: number; tick: number; reason: 'host_ended' | 'connection_lost'; distance: number; hoopsCleared: number }
   | { type: 'seat-joined'; seatId: number; name: string }
   | { type: 'seat-left'; seatId: number }
   | { type: 'warning'; message: string; untilTick: number };

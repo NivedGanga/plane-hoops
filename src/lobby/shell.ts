@@ -41,7 +41,7 @@ export function mountShell(root: HTMLElement): void {
         <div class="shuffle-alert hidden" id="shuffle-alert"></div>
         <button class="button secondary hidden" id="end-run-button" style="position:absolute;right:32px;top:80px;width:auto;padding:0 16px;margin:0;pointer-events:auto">End run</button><div class="footer-tip" id="footer-tip">W A S D · co-op keyboard · keep the plane inside the flight lane</div>
       </section>
-      <div class="overlay hidden" id="result-overlay"><div class="result-card"><div class="eyebrow" id="result-eyebrow">Flight complete</div><h2 id="result-title">Nice flying, crew.</h2><div class="result-score" id="result-score">0</div><div class="result-copy">shared team points</div><div class="leaderboard" id="leaderboard"></div><div class="leaderboard" id="top-leaderboard"></div><button class="button" id="restart-button">Fly another round</button><button class="button secondary" id="leave-button">Leave room</button></div></div>
+      <div class="overlay hidden" id="result-overlay"><div class="result-card"><div class="eyebrow" id="result-eyebrow">Flight complete</div><h2 id="result-title">Nice flying, crew.</h2><div class="result-score" id="result-score">0</div><div class="result-copy">shared team points</div><div class="leaderboard" id="leaderboard"></div><div class="leaderboard" id="top-leaderboard"></div><button class="button" id="restart-button">Fly another round</button><button class="button secondary hidden" id="return-lobby-button">Return to lobby</button><button class="button secondary" id="leave-button">Leave room</button></div></div>
       <div class="toast hidden" id="toast"></div>
     </div>`;
 }

@@ -84,6 +84,7 @@ export class PlaneHoopsApp {
   private hostUid?: string;
   private endReason: 'crash' | 'host_ended' | 'connection_lost' = 'crash';
   private roundFinished = false;
+  private leaderboardRequestId = 0;
 
   constructor(private root: HTMLElement) {
     const canvasHost = root.querySelector<HTMLElement>('#world');
@@ -409,6 +410,8 @@ export class PlaneHoopsApp {
       this.endReason = event.reason; this.hoopClears = event.hoopsCleared;
       this.state = { ...this.state, phase: 'ended', score: event.score, tick: event.tick, z: event.distance };
       this.finishRound(event.type === 'crash');
+    } else if (event.type === 'leaderboard-updated') {
+      void this.renderLeaderboard();
     } else if (event.type === 'seat-joined') { this.names.set(event.seatId, event.name); this.updateSeatHud(); }
     else if (event.type === 'seat-left') { this.names.delete(event.seatId); this.updateSeatHud(); }
   }
@@ -464,8 +467,12 @@ export class PlaneHoopsApp {
     if (crashed) this.endReason = 'crash';
     const distance = Math.max(0, Math.round(this.state.z));
     this.root.querySelector('#leaderboard')!.innerHTML = `<div class="leader-row"><span>Team score</span><strong>${score} pts</strong></div><div class="leader-row"><span>Hoops cleared</span><strong>${this.hoopClears}</strong></div><div class="leader-row"><span>Distance</span><strong>${distance.toLocaleString()} m</strong></div><div class="leader-row"><span>Team</span><strong>${escapeHtml(this.roomName)}</strong></div>`;
-    if (this.room?.isHost && this.endReason !== 'connection_lost' && this.hostUid) void submitRun(this.hostUid, this.roomName, [...this.names.values()].slice(0,4), score, this.hoopClears, distance).then(()=>this.showToast('Leaderboard record saved.')).catch(e=>console.warn('Leaderboard write failed',e));
-    void this.renderLeaderboard();
+    if (this.room?.isHost && this.endReason !== 'connection_lost' && this.hostUid) {
+      void submitRun(this.hostUid, this.roomName, [...this.names.values()].slice(0,4), score, this.hoopClears, distance)
+        .then(() => { this.showToast('Leaderboard record saved.'); this.broadcastEvent({ type: 'leaderboard-updated' }); })
+        .catch(e => console.warn('Leaderboard write failed', e))
+        .finally(() => { void this.renderLeaderboard(); });
+    } else void this.renderLeaderboard();
     this.root.querySelector('#restart-button')?.classList.toggle('hidden', !this.room?.isHost);
     this.root.querySelector('#return-lobby-button')?.classList.toggle('hidden', !this.room?.isHost);
     this.root.querySelector('#end-run-button')?.classList.add('hidden');
@@ -485,7 +492,7 @@ export class PlaneHoopsApp {
     this.updateLobbyRoom();
   }
 
-  private async renderLeaderboard(): Promise<void> { const node=this.root.querySelector<HTMLElement>('#top-leaderboard'); if(!node)return; try { const uid=await authenticateLeaderboard(); if(!uid){node.textContent='Sign in to view the leaderboard.';return;} const rows=rankLeaderboard(await fetchTop20()); node.innerHTML='<div class="leader-row"><strong>Rank · Team name</strong><strong>Record</strong></div>'+rows.map((row,i)=>`<div class="leader-row"><span>${i+1}. ${escapeHtml(row.team_name)} · ${escapeHtml(row.members.join(', '))}</span><strong>${row.points.toLocaleString()} pts (${row.hoops_cleared} hoops)</strong></div>`).join(''); } catch { node.textContent='Leaderboard unavailable.'; } }
+  private async renderLeaderboard(): Promise<void> { const node=this.root.querySelector<HTMLElement>('#top-leaderboard'); if(!node)return; const requestId=++this.leaderboardRequestId; try { const uid=await authenticateLeaderboard(); if(!uid){if(requestId===this.leaderboardRequestId)node.textContent='Sign in to view the leaderboard.';return;} const rows=rankLeaderboard(await fetchTop20()); if(requestId!==this.leaderboardRequestId)return; node.innerHTML='<div class="leader-row"><strong>Rank · Team name</strong><strong>Record</strong></div>'+rows.map((row,i)=>`<div class="leader-row"><span>${i+1}. ${escapeHtml(row.team_name)} · ${escapeHtml(row.members.join(', '))}</span><strong>${row.points.toLocaleString()} pts (${row.hoops_cleared} hoops)</strong></div>`).join(''); } catch { if(requestId===this.leaderboardRequestId)node.textContent='Leaderboard unavailable.'; } }
 
   private updateHud(state: PlaneState): void {
     if (!this.room) return;

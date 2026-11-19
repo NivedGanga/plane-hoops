@@ -2,7 +2,7 @@
 
 - Project is dedicated to this game in the only connected Supabase organization, in `ap-south-1`; the connector quoted $0/month.
 - On `plane-hoops-production`, anonymous sign-ins are enabled and a real `signInAnonymously()` call succeeded. The schema and the leaderboard-name normalization correction are applied and recorded; live test accounts and rows were removed afterward.
-- The public GitHub repository is `NivedGanga/plane-hoops`; the Vercel connector had no stored authentication, and the authorized browser's GitHub sign-in reached a Vercel authenticator/passkey challenge. No unattended credential was available, so no Supabase deployment is claimed.
+- The public GitHub repository is `NivedGanga/plane-hoops`. An authenticated browser was used to create a separate Vercel project, `plane-hoops-supabase`, at https://plane-hoops-supabase.vercel.app. Its production branch is `supabase-implementation`, with the Supabase URL and public key configured.
 - While pushing the final work, `main` was independently force-updated to a different Firebase implementation with unrelated history. To avoid overwriting that work, this Supabase implementation is preserved on `supabase-implementation`, not the default branch.
 - The GitHub Actions CI job did not start: GitHub reported the account is locked due to a billing issue. Local typecheck, tests and build passed, but this is not a passing remote CI run.
 - Metered Open Relay is the planned free-tier TURN provider, with server-only `METERED_DOMAIN` and `METERED_SECRET_KEY`; its published free allowance is 20 GB/month. No credentials were available, so STUN-only is the fallback and some networks cannot connect.
@@ -11,7 +11,7 @@
 - Leaderboard scores are host-reported and anti-cheat is out of scope.
 - Supabase free-tier projects may pause after inactivity, making the game unavailable until restored.
 - Existing deterministic simulation tests run 30 virtual minutes and a separate 150 ms/5% loss model; these do not prove real browser WebRTC or TURN behavior.
-- The full local test suite passed 22/22 tests against the new project, including live anonymous sign-in and RLS checks for rooms, signals, leaderboard, and `get_room`. Two lobby tests and one real two-browser WebRTC connection smoke test also passed; actual two-/four-client gameplay, ICE recovery, and relay-only tests remain outstanding.
+- The full local test suite passed 22/22 tests against the new project, including live anonymous sign-in and RLS checks for rooms, signals, leaderboard, and `get_room`. Two lobby tests and a real two-browser lifecycle test also passed. The deployed site passed a real two-browser short flight and leaderboard write/read test for host and guest. Four-player, ICE recovery, relay-only, and long-session acceptance remain outstanding.
 - A post-run lobby action and authoritative reliable final results were added; silently disconnected remote seats may not be reclaimed because signaling has no peer-presence/leave detection yet.
 - Supabase signaling uses database inserts and Realtime rather than a custom signaling server, to match the requested infrastructure.
 - The connected Supabase migration tool applied both migrations; the local files match its recorded versions: initial `20261119175502` and normalization correction `20261119175612`.

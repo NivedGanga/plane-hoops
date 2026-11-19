@@ -2,7 +2,7 @@
 
 A cooperative browser flight game: two or four pilots share one plane, one score, and W/A/S/D. The host runs the simulation and each remote pilot connects directly to the host using WebRTC.
 
-> **Work in progress:** `plane-hoops-production` has anonymous sign-ins enabled, the migrations applied, and 22 tests passed, including live database security checks. A two-browser WebRTC connection smoke test and two lobby tests also passed locally. No Vercel production deployment is claimed; real gameplay, TURN, and long-running multi-client acceptance tests remain outstanding. See [DECISIONS.md](DECISIONS.md).
+> **Live deployment:** [plane-hoops-supabase.vercel.app](https://plane-hoops-supabase.vercel.app) runs from the `supabase-implementation` branch against `plane-hoops-production`. The 22-test suite passed including live database security checks; real two-browser tests passed for joining, a short flight, matching results, and a saved leaderboard entry. Four-player, TURN, reconnection, and long-running network acceptance remain outstanding. See [DECISIONS.md](DECISIONS.md).
 
 ## Local setup
 
@@ -22,7 +22,7 @@ npm run test:browser    # install Playwright Chromium first: npx playwright inst
 npm run build
 ```
 
-The Vitest network test models latency and packet loss but is not a real WebRTC or TURN test. An opt-in Playwright smoke test in `tests/integration/` checks that two real browser contexts establish a WebRTC connection using the live project. The live security tests are skipped unless `SUPABASE_URL` and `SUPABASE_ANON_KEY` are set; they require anonymous sign-ins and all migrations. Do not run them against an unrelated project.
+The Vitest network test models latency and packet loss but is not a real WebRTC or TURN test. An opt-in Playwright smoke test in `tests/integration/` checks that two real browser contexts establish a WebRTC connection and complete a short game using the live project; it suppresses test leaderboard writes. The live security tests are skipped unless `SUPABASE_URL` and `SUPABASE_ANON_KEY` are set; they require anonymous sign-ins and all migrations. Do not run them against an unrelated project.
 
 ## Supabase setup
 
@@ -35,7 +35,7 @@ Supabase free-tier projects can pause after inactivity, taking the game offline 
 
 ## Vercel and TURN
 
-Import the GitHub repository into a separate Vercel project using the Vite preset, select `supabase-implementation` as its production branch, and set `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`. The repository's `main` branch contains a separate Firebase implementation; do not overwrite or deploy it as this Supabase app. Pull requests should receive preview deployments. The static app is served by Vercel; `api/turn.ts` obtains time-limited TURN credentials server-side. This Supabase deployment has not yet been created or verified.
+The separate Vercel project `plane-hoops-supabase` uses the Vite preset, tracks `supabase-implementation` for production, and has `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` configured for production and previews. The repository's `main` branch contains a separate Firebase implementation; do not overwrite or deploy it as this Supabase app. Pull requests should receive preview deployments. The static app is served by Vercel; `api/turn.ts` obtains time-limited TURN credentials server-side when configured.
 
 The selected provider is [Metered Open Relay](https://www.metered.ca/tools/openrelay/), which advertises a free monthly allowance. Set `METERED_DOMAIN` (for example `example.metered.live`) and `METERED_SECRET_KEY` as **server-only** Vercel environment variables. The endpoint requests a four-hour credential using Metered's [expiring-credential API](https://www.metered.ca/docs/turnserver-guides/expiring-turn-credentials/); no provider secret is bundled in the browser. Metered warns that newly minted credentials can take up to two minutes to propagate and expire even in an active session. Rotating them and validating relay-only long games are outstanding production tasks.
 

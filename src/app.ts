@@ -1,4 +1,4 @@
-import { CLIENT_INTERPOLATION_MS, HOST_HOOPS_AHEAD, HOOP_CLEANUP_BEHIND_M, ICE_RESTART_GRACE_SECONDS, INPUT_RATE_LIMIT_PER_SECOND, SHUFFLE_INTERVAL_END_MAX_SECONDS, SHUFFLE_INTERVAL_END_MIN_SECONDS, SHUFFLE_INTERVAL_MAX_SECONDS, SHUFFLE_INTERVAL_MIN_SECONDS, SIM_DT_SECONDS, SIMULATION_HZ, SHUFFLE_MIN_GAP_SECONDS, SHUFFLE_WARNING_SECONDS, SNAPSHOTS_PER_SECOND } from '../config/tuning';
+import { CLIENT_INTERPOLATION_MS, CRASH_RESULT_DELAY_MS, HOST_HOOPS_AHEAD, HOOP_CLEANUP_BEHIND_M, ICE_RESTART_GRACE_SECONDS, INPUT_RATE_LIMIT_PER_SECOND, ROCK_COLLISION_LOOKAHEAD_M, SHUFFLE_INTERVAL_END_MAX_SECONDS, SHUFFLE_INTERVAL_END_MIN_SECONDS, SHUFFLE_INTERVAL_MAX_SECONDS, SHUFFLE_INTERVAL_MIN_SECONDS, SIM_DT_SECONDS, SIMULATION_HZ, SHUFFLE_MIN_GAP_SECONDS, SHUFFLE_WARNING_SECONDS, SNAPSHOTS_PER_SECOND } from '../config/tuning';
 import { SeededRandom, createPlaneState, generateHoopBatch, initialBindings, inputForSeat, keysForSeat, controlsForSeat, shuffledBindings, sameBindings, startRound, stepRound, type BindingSet, type Direction, type Hoop, discardHoopsBehind, type PlaneState, type RoundSnapshot } from './sim';
 import { SoundEffects } from './audio/sfx';
 import { KeyboardState } from './input/keyboard';
@@ -86,6 +86,8 @@ export class PlaneHoopsApp {
   private hostUid?: string;
   private endReason: 'crash' | 'host_ended' | 'connection_lost' = 'crash';
   private crashImpact?: { rockId: number; impactPoint: { x: number; y: number; z: number }; shipPosition: { x: number; y: number; z: number } };
+  private crashSequenceStarted = false;
+  private crashResultsTimer?: number;
   private roundFinished = false;
   private leaderboardRequestId = 0;
 
@@ -271,6 +273,8 @@ export class PlaneHoopsApp {
     this.state = startRound(createPlaneState());
     this.roundFinished = false;
     this.endReason = 'crash';
+    if (this.crashResultsTimer) window.clearTimeout(this.crashResultsTimer);
+    this.crashResultsTimer = undefined; this.crashSequenceStarted = false;
     this.crashImpact = undefined; this.world.reset();
     this.bindings = initialBindings(this.room.playerCount);
     this.pendingShuffle = null;
@@ -281,6 +285,7 @@ export class PlaneHoopsApp {
     this.root.querySelector('#lobby-wrap')?.classList.add('hidden');
     this.root.querySelector('#result-overlay')?.classList.add('hidden');
     this.root.querySelector('#game-hud')?.classList.remove('hidden');
+    this.root.querySelector('.shell')?.classList.add('game-active');
     this.root.querySelector<HTMLButtonElement>('#restart-button')?.classList.remove('hidden');
     this.root.querySelector<HTMLButtonElement>('#end-run-button')?.classList.toggle('hidden', !this.room.isHost);
     this.signaling?.send({ type: 'room-status', phase: 'playing' });
@@ -358,14 +363,22 @@ export class PlaneHoopsApp {
       if (hoop.type === 'booster') this.broadcastEvent({ type: 'booster-activated', untilTick: this.state.boosterUntilTick, score: this.state.score, tick: this.state.tick });
       if (hoop.type === 'magnetic' && hoop.arrow) this.broadcastEvent({ type: 'magnetic-activated', direction: hoop.arrow, untilTick: this.state.pullUntilTick, score: this.state.score, tick: this.state.tick });
     }
-    this.hoops = discardHoopsBehind(this.hoops.filter((hoop) => !hoop.cleared), this.state.z);
-    if (this.state.phase !== 'ended' && this.hoops.length < HOST_HOOPS_AHEAD) {
-      const batch = generateHoopBatch(this.random, this.placement, this.state.elapsedSeconds, this.state.speedKmh, HOST_HOOPS_AHEAD - this.hoops.length);
+    for (const rock of result.passed) if (rock.decoy) this.broadcastEvent({ type: 'rock-removed', rockId: rock.id, tick: this.state.tick });
+    const unpassed = this.hoops.filter((rock) => !rock.cleared);
+    const retained = discardHoopsBehind(unpassed, this.state.z);
+    const retainedIds = new Set(retained.map((rock) => rock.id));
+    for (const rock of unpassed) if (!retainedIds.has(rock.id)) this.broadcastEvent({ type: 'rock-removed', rockId: rock.id, tick: this.state.tick });
+    this.hoops = retained;
+    const primaryRocks = this.hoops.filter((rock) => !rock.decoy);
+    const farthestPrimaryZ = primaryRocks.at(-1)?.z ?? this.state.z;
+    if (this.state.phase !== 'ended' && (primaryRocks.length < HOST_HOOPS_AHEAD || farthestPrimaryZ - this.state.z < ROCK_COLLISION_LOOKAHEAD_M)) {
+      const missing = Math.max(1, HOST_HOOPS_AHEAD - primaryRocks.length);
+      const batch = generateHoopBatch(this.random, this.placement, this.state.elapsedSeconds, this.state.speedKmh, missing);
       this.hoops.push(...batch.hoops); this.placement = batch.placement;
       this.broadcastEvent({ type: 'hoop-batch', hoops: batch.hoops });
     }
     if (this.state.tick % Math.max(1, Math.round(SIMULATION_HZ / SNAPSHOTS_PER_SECOND)) === 0) this.sendSnapshot();
-    if (this.state.phase === 'ended') this.finishRound(true);
+    if (this.state.phase === 'ended') this.beginCrashSequence();
   }
 
   private sendSnapshot(): void {
@@ -377,7 +390,7 @@ export class PlaneHoopsApp {
         speedKmh: this.state.speedKmh, score: this.state.score, phase: this.state.phase,
         elapsedSeconds: this.state.elapsedSeconds, boosterRemainingTicks: Math.max(0, this.state.boosterUntilTick - this.state.tick),
         pullRemainingTicks: Math.max(0, this.state.pullUntilTick - this.state.tick), pullDirection: this.state.pullDirection,
-      }, bindings: this.bindings, hoops: this.hoops,
+      }, bindings: this.bindings,
     };
     this.peerMesh?.sendState(packet);
   }
@@ -398,9 +411,8 @@ export class PlaneHoopsApp {
 
   private receiveState(packet: StatePacket): void {
     if (!this.room || this.room.isHost) return;
-    if (this.roundFinished) return;
+    if (this.roundFinished || this.crashSequenceStarted) return;
     this.previousSnapshot = this.latestSnapshot; this.latestSnapshot = packet.snapshot;
-    this.hoops = packet.hoops;
     if (packet.snapshot.tick >= (this.pendingShuffle?.effectiveTick ?? Number.MAX_SAFE_INTEGER)) {
       if (this.pendingShuffle) { this.bindings = this.pendingShuffle.bindings; this.pendingShuffle = null; }
     }
@@ -415,25 +427,31 @@ export class PlaneHoopsApp {
   private receiveGameEvent(event: GameEvent): void {
     if (this.room?.isHost) return;
     if (event.type === 'round-start') {
+      if (this.crashResultsTimer) window.clearTimeout(this.crashResultsTimer);
+      this.crashResultsTimer = undefined; this.crashSequenceStarted = false;
       this.seed = event.seed; this.bindings = event.bindings; this.state = startRound(createPlaneState()); this.roundFinished = false; this.endReason = 'crash'; this.crashImpact = undefined; this.world.reset();
       this.pendingShuffle = null; this.hoops = []; this.hoopClears = 0; this.shuffleCount = 0; this.remoteInputSequences.clear(); this.remoteInputTimes.clear();
       this.root.querySelector('#lobby-wrap')?.classList.add('hidden'); this.root.querySelector('#result-overlay')?.classList.add('hidden');
+      this.root.querySelector('.shell')?.classList.add('game-active');
       this.root.querySelector('#game-hud')?.classList.remove('hidden'); this.statusText = 'In flight';
       this.sounds.roundStart(); this.updateSeatHud();
     } else if (event.type === 'hoop-cleared') {
       this.hoopClears++;
+      this.hoops = this.hoops.filter((rock) => rock.id !== event.hoopId);
       this.sounds.hoopCleared(event.hoopType);
+    } else if (event.type === 'rock-removed') {
+      this.hoops = this.hoops.filter((rock) => rock.id !== event.rockId);
     } else if (event.type === 'hoop-batch') {
       const ids = new Set(this.hoops.map((hoop) => hoop.id)); this.hoops.push(...event.hoops.filter((hoop) => !ids.has(hoop.id)));
     } else if (event.type === 'shuffle-command') {
       this.pendingShuffle = { bindings: event.bindings, effectiveTick: event.effectiveTick };
     } else if (event.type === 'crash') {
-      if (this.roundFinished) return;
+      if (this.roundFinished || this.crashSequenceStarted) return;
       this.endReason = 'crash'; this.hoopClears = event.hoopsCleared;
       this.state = { ...this.state, ...event.shipPosition, phase: 'ended', score: event.score, tick: event.tick };
       this.crashImpact = { rockId: event.rockId, impactPoint: event.impactPoint, shipPosition: event.shipPosition };
       this.world.explode(event.impactPoint, event.rockId, this.state);
-      this.finishRound(true);
+      this.beginCrashSequence();
     } else if (event.type === 'round-end') {
       if (this.roundFinished) return;
       this.endReason = event.reason; this.hoopClears = event.hoopsCleared;
@@ -476,19 +494,37 @@ export class PlaneHoopsApp {
     if (status === 'disconnected' || status === 'failed' || status === 'closed') this.pauseForRecovery(seatId);
   }
 
+  private beginCrashSequence(): void {
+    if (this.crashSequenceStarted || this.roundFinished) return;
+    this.crashSequenceStarted = true;
+    if (this.room?.isHost) {
+      const impact = this.crashImpact;
+      if (!impact) { this.endReason = 'host_ended'; this.finishRound(false); return; }
+      this.broadcastEvent({
+        type: 'crash', reason: 'crash', tick: this.state.tick, score: this.state.score,
+        distance: Math.max(0, Math.round(this.state.z)), hoopsCleared: this.hoopClears, ...impact,
+      });
+      this.signaling?.send({ type: 'room-status', phase: 'ended' });
+    }
+    this.sounds.crash();
+    this.root.querySelector('#end-run-button')?.classList.add('hidden');
+    this.crashResultsTimer = window.setTimeout(() => {
+      this.crashResultsTimer = undefined;
+      this.finishRound(true);
+    }, CRASH_RESULT_DELAY_MS);
+  }
+
   private finishRound(crashed: boolean): void {
     if (this.roundFinished) return;
     this.roundFinished = true;
-    if (crashed) this.sounds.crash();
     const score = this.state.score;
     if (this.room?.isHost) {
       const distance = Math.max(0, Math.round(this.state.z));
       const hoopsCleared = this.hoopClears;
-      if (crashed) {
-        const impact = this.crashImpact ?? { rockId: -1, impactPoint: { x: this.state.x, y: this.state.y, z: this.state.z }, shipPosition: { x: this.state.x, y: this.state.y, z: this.state.z } };
-        this.broadcastEvent({ type: 'crash', reason: 'crash', tick: this.state.tick, score, distance, hoopsCleared, ...impact });
-      } else this.broadcastEvent({ type: 'round-end', tick: this.state.tick, score, reason: this.endReason === 'connection_lost' ? 'connection_lost' : 'host_ended', distance, hoopsCleared });
-      this.signaling?.send({ type: 'room-status', phase: 'ended' });
+      if (!crashed) {
+        this.broadcastEvent({ type: 'round-end', tick: this.state.tick, score, reason: this.endReason === 'connection_lost' ? 'connection_lost' : 'host_ended', distance, hoopsCleared });
+        this.signaling?.send({ type: 'room-status', phase: 'ended' });
+      }
     }
     this.state = { ...this.state, phase: 'ended' };
     this.remoteInputSequences.clear(); this.remoteInputTimes.clear(); this.remoteMasks.clear();
@@ -497,7 +533,7 @@ export class PlaneHoopsApp {
     this.root.querySelector('#result-title')!.textContent = this.endReason === 'connection_lost' ? 'Crew link lost.' : crashed ? 'Asteroid impact.' : 'Nice flying, crew.';
     this.root.querySelector('#result-eyebrow')!.textContent = this.endReason === 'connection_lost' ? 'Connection lost · not submitted' : crashed ? 'SHIP DESTROYED · ROCK CONTACT' : 'Host ended the run';
     const distance = Math.max(0, Math.round(this.state.z));
-    this.root.querySelector('#leaderboard')!.innerHTML = `<div class="leader-row"><span>Team score</span><strong>${score} pts</strong></div><div class="leader-row"><span>Hoops cleared</span><strong>${this.hoopClears}</strong></div><div class="leader-row"><span>Distance</span><strong>${distance.toLocaleString()} m</strong></div><div class="leader-row"><span>Team</span><strong>${escapeHtml(this.roomName)}</strong></div>`;
+    this.root.querySelector('#leaderboard')!.innerHTML = `<div class="leader-row"><span>Team score</span><strong>${score} pts</strong></div><div class="leader-row"><span>Holes cleared</span><strong>${this.hoopClears}</strong></div><div class="leader-row"><span>Distance</span><strong>${distance.toLocaleString()} m</strong></div><div class="leader-row"><span>Team</span><strong>${escapeHtml(this.roomName)}</strong></div>`;
     if (this.room?.isHost && this.endReason !== 'connection_lost' && this.hostUid) {
       void submitRun(this.hostUid, this.roomName, [...this.names.values()].slice(0,4), score, this.hoopClears, distance)
         .then(() => { this.showToast('Leaderboard record saved.'); this.broadcastEvent({ type: 'leaderboard-updated' }); })
@@ -518,12 +554,13 @@ export class PlaneHoopsApp {
     this.root.querySelector('#result-overlay')?.classList.add('hidden');
     this.root.querySelector('#game-hud')?.classList.add('hidden');
     this.root.querySelector('#lobby-wrap')?.classList.remove('hidden');
+    this.root.querySelector('.shell')?.classList.remove('game-active');
     this.root.querySelector('#restart-button')?.classList.add('hidden');
     this.roundFinished = false;
     this.updateLobbyRoom();
   }
 
-  private async renderLeaderboard(): Promise<void> { const node=this.root.querySelector<HTMLElement>('#top-leaderboard'); if(!node)return; const requestId=++this.leaderboardRequestId; try { const uid=await authenticateLeaderboard(); if(!uid){if(requestId===this.leaderboardRequestId)node.textContent='Sign in to view the leaderboard.';return;} const rows=rankLeaderboard(await fetchTop20()); if(requestId!==this.leaderboardRequestId)return; node.innerHTML='<div class="leader-row"><strong>Rank · Team name</strong><strong>Record</strong></div>'+rows.map((row,i)=>`<div class="leader-row"><span>${i+1}. ${escapeHtml(row.team_name)} · ${escapeHtml(row.members.join(', '))}</span><strong>${row.points.toLocaleString()} pts (${row.hoops_cleared} hoops)</strong></div>`).join(''); } catch { if(requestId===this.leaderboardRequestId)node.textContent='Leaderboard unavailable.'; } }
+  private async renderLeaderboard(): Promise<void> { const node=this.root.querySelector<HTMLElement>('#top-leaderboard'); if(!node)return; const requestId=++this.leaderboardRequestId; try { const uid=await authenticateLeaderboard(); if(!uid){if(requestId===this.leaderboardRequestId)node.textContent='Sign in to view the leaderboard.';return;} const rows=rankLeaderboard(await fetchTop20()); if(requestId!==this.leaderboardRequestId)return; node.innerHTML='<div class="leader-row"><strong>Rank · Team name</strong><strong>Record</strong></div>'+rows.map((row,i)=>`<div class="leader-row"><span>${i+1}. ${escapeHtml(row.team_name)} · ${escapeHtml(row.members.join(', '))}</span><strong>${row.points.toLocaleString()} pts (${row.hoops_cleared} holes)</strong></div>`).join(''); } catch { if(requestId===this.leaderboardRequestId)node.textContent='Leaderboard unavailable.'; } }
 
   private updateHud(state: PlaneState): void {
     if (!this.room) return;
@@ -587,6 +624,7 @@ export class PlaneHoopsApp {
     this.room = undefined; this.names.clear(); this.hoops = []; this.remoteMasks.clear(); this.remoteInputSequences.clear(); this.remoteInputTimes.clear(); this.snapshotSequence = 0; this.inputSequence = 0; this.pendingShuffle = null;
     this.state = createPlaneState(); this.latestSnapshot = undefined; this.previousSnapshot = undefined;
     this.root.querySelector('#game-hud')?.classList.add('hidden'); this.root.querySelector('#result-overlay')?.classList.add('hidden');
+    this.root.querySelector('.shell')?.classList.remove('game-active');
     const roomView = this.root.querySelector('#room-view'); roomView?.classList.add('hidden'); if (roomView) roomView.innerHTML = '';
     this.root.querySelector('#create-form')?.classList.remove('hidden');
     this.root.querySelector('#join-form')?.classList.add('hidden');

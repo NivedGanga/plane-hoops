@@ -3,7 +3,8 @@ import {
   ACCEPTANCE_SIM_TICKS, ACCEPTANCE_OPTIMAL_CLEAR_FRACTION, ACCEPTANCE_RANDOM_CLEAR_MAX_FRACTION,
   FORWARD_SPEED_CAP_KMH, HALF_WIDTH_M, SIMULATION_HZ, START_FORWARD_SPEED_KMH, HOOP_CLEANUP_BEHIND_M,
   HOOP_MINIMUM_CLEARANCE_M, MAX_SHIP_COLLISION_RADIUS_M, ROCK_OUTLINE_POINTS,
-  ROCK_THICKNESS_MIN_M, ROCK_THICKNESS_MAX_M, HOOP_SPACING_MIN_M, HOOP_SPACING_MAX_M,
+  ROCK_THICKNESS_MIN_M, ROCK_THICKNESS_MAX_M, ROCK_COLLISION_LOOKAHEAD_M, HOOP_SPACING_MIN_M, HOOP_SPACING_MAX_M,
+  HOST_HOOPS_AHEAD,
   SHUFFLE_INTERVAL_END_MIN_SECONDS, SHUFFLE_INTERVAL_END_MAX_SECONDS,
   SPEED_RAMP_SECONDS, LATERAL_ACCELERATION_MPS2, MAX_LATERAL_SPEED_MPS,
 } from '../config/tuning';
@@ -12,7 +13,7 @@ import {
   initialBindings, inputForSeat, isOutsideBounds, keysForSeat, controlsForSeat, shuffledBindings,
   startRound, stepRound, sweptHoopCrossing, sweptRockCollision, tickPhysics, discardHoopsBehind,
 } from '../src/sim';
-import type { Hoop, PilotInput } from '../src/sim';
+import type { Hoop, PilotInput, PlaneState } from '../src/sim';
 
 const neutral: PilotInput = { up: false, down: false, left: false, right: false };
 function testHoop(overrides: Partial<Hoop> = {}): Hoop {
@@ -28,10 +29,35 @@ function activeCourseWindow(rocks: Hoop[], state: ReturnType<typeof startRound>,
   let start = cursor.index;
   while (start < rocks.length && rocks[start]!.z + rocks[start]!.thickness / 2 + MAX_SHIP_COLLISION_RADIUS_M < state.z - HOOP_CLEANUP_BEHIND_M) start++;
   let end = start;
-  const ahead = 1500 + ROCK_THICKNESS_MAX_M / 2 + MAX_SHIP_COLLISION_RADIUS_M;
+  const ahead = ROCK_COLLISION_LOOKAHEAD_M + ROCK_THICKNESS_MAX_M / 2 + MAX_SHIP_COLLISION_RADIUS_M;
   while (end < rocks.length && rocks[end]!.z - state.z <= ahead) end++;
   cursor.index = start;
   return rocks.slice(start, end);
+}
+
+function optimalPilotInput(state: PlaneState, target: Hoop, nextTarget: Hoop): PilotInput {
+  const secondsToTarget = Math.max(1 / SIMULATION_HZ, (target.z - state.z) / (state.speedKmh / 3.6));
+  const secondsBetweenTargets = Math.max(1 / SIMULATION_HZ, (nextTarget.z - target.z) / (state.speedKmh / 3.6));
+  const steering = (error: number, velocity: number, nextDisplacement: number): number => {
+    const plannedExitVelocity = nextDisplacement / secondsBetweenTargets;
+    const desiredVelocity = Math.max(-MAX_LATERAL_SPEED_MPS, Math.min(MAX_LATERAL_SPEED_MPS, 2 * error / secondsToTarget - plannedExitVelocity));
+    return desiredVelocity - velocity > 0.7 ? 1 : desiredVelocity - velocity < -0.7 ? -1 : 0;
+  };
+  const xCommand = steering(target.x - state.x, state.vx, nextTarget.x - target.x);
+  const yCommand = steering(target.y - state.y, state.vy, nextTarget.y - target.y);
+  const pull = state.tick + 1 < state.pullUntilTick ? state.pullDirection : null;
+  const pullX = pull === 'right' ? 1 : pull === 'left' ? -1 : 0;
+  const pullY = pull === 'up' ? 1 : pull === 'down' ? -1 : 0;
+  const counterSteer = (desired: number, magnetic: number): number => {
+    let best = 0; let error = Number.POSITIVE_INFINITY;
+    for (const candidate of [-1, 0, 1]) {
+      const candidateError = Math.abs(candidate + magnetic - desired);
+      if (candidateError < error) { best = candidate; error = candidateError; }
+    }
+    return best;
+  };
+  const xInput = counterSteer(xCommand, pullX); const yInput = counterSteer(yCommand, pullY);
+  return { right: xInput > 0, left: xInput < 0, up: yInput > 0, down: yInput < 0 };
 }
 
 describe('flight simulation', () => {
@@ -162,6 +188,17 @@ describe('flight simulation', () => {
     expect(sweptRockCollision(from, to, [testHoop({ id: 10, z: 2000, radius: 5.5 })])).toBeNull();
   });
 
+  it('detects all 10,000 random 320 km/h approaches to minimum-thickness solid rock faces', () => {
+    const random = new SeededRandom(0x3204);
+    const rock = testHoop({ id: 42, z: 100, radius: 5.5, thickness: ROCK_THICKNESS_MIN_M });
+    const tickDistance = FORWARD_SPEED_CAP_KMH / 3.6 / SIMULATION_HZ;
+    for (let approach = 0; approach < 10_000; approach++) {
+      const from = { ...startRound(), x: 8.2 + random.next() * 0.3, y: 44.8 + random.next() * 0.4, z: rock.z - 4, speedKmh: FORWARD_SPEED_CAP_KMH };
+      const to = { ...from, x: from.x + (random.next() - 0.5) * 0.12, y: from.y + (random.next() - 0.5) * 0.12, z: from.z + tickDistance, tick: 1 };
+      expect(sweptRockCollision(from, to, [rock])?.rockId).toBe(rock.id);
+    }
+  });
+
   it('applies cooperative team scoring and booster/magnetic effects without changing forward speed', () => {
     const hoop = testHoop({ id: 1, type: 'booster', z: 0, radius: 10 });
     const boosted = activateHoopEffect(startRound(), hoop);
@@ -257,6 +294,37 @@ describe('flight simulation', () => {
     const averageSpacing = (course: Hoop[]) => course.slice(1).reduce((sum, hoop, index) => sum + hoop.z - course[index]!.z, 0) / (course.length - 1);
     expect(late.decoys.length).toBeGreaterThan(early.decoys.length * 2);
     expect(averageSpacing(late.main)).toBeLessThan(averageSpacing(early.main));
+    for (const { main, decoys } of [early, late]) for (const decoy of decoys) {
+      const target = main.find((hoop) => hoop.z === decoy.z)!;
+      const centerSeparation = Math.hypot(decoy.x - target.x, decoy.y - target.y);
+      const outerBound = Math.max(...decoy.outline.map((point) => Math.hypot(point.x, point.y)));
+      expect(centerSeparation - outerBound - MAX_SHIP_COLLISION_RADIUS_M).toBeGreaterThan(0);
+    }
+  });
+
+  it('keeps every reachable centerline clear of side-rock solids across 128 seeded layouts', () => {
+    let checkedDecoys = 0;
+    for (let seed = 1; seed <= 128; seed++) {
+      const random = new SeededRandom(seed * 7919);
+      const placement = { lastZ: 0, predicted: { x: 0, y: 45, vx: 0, vy: 0 }, nextId: 1 };
+      const batch = generateHoopBatch(random, placement, 600, 320, HOST_HOOPS_AHEAD);
+      const primary = batch.hoops.filter((rock) => !rock.decoy);
+      const decoys = batch.hoops.filter((rock) => rock.decoy);
+      expect(primary).toHaveLength(HOST_HOOPS_AHEAD);
+      let previous = placement.predicted; let previousZ = placement.lastZ;
+      for (const target of primary) {
+        expect(hoopReachable(previous, target, previousZ, 320)).toBe(true);
+        previous = { x: target.x, y: target.y, vx: 0, vy: 0 }; previousZ = target.z;
+      }
+      for (const decoy of decoys) {
+        const target = primary.find((rock) => rock.z === decoy.z)!;
+        const outerBound = Math.max(...decoy.outline.map((point) => Math.hypot(point.x, point.y)));
+        const closestCenterlineClearance = Math.hypot(decoy.x - target.x, decoy.y - target.y) - outerBound - MAX_SHIP_COLLISION_RADIUS_M;
+        expect(closestCenterlineClearance).toBeGreaterThan(0);
+        checkedDecoys++;
+      }
+    }
+    expect(checkedDecoys).toBeGreaterThan(500);
   });
 
   it('optimal lookahead clears at least 95% while random held keys clear under 10% of a seeded 1,000-hoop course', () => {
@@ -284,30 +352,7 @@ describe('flight simulation', () => {
       if (!target) break;
       const nextTarget = optimalHoops[Math.min(targetIndex + 1, optimalHoops.length - 1)];
       if (!nextTarget) break;
-      const secondsToTarget = Math.max(1 / SIMULATION_HZ, (target.z - optimal.z) / (optimal.speedKmh / 3.6));
-      const secondsBetweenTargets = Math.max(1 / SIMULATION_HZ, (nextTarget.z - target.z) / (optimal.speedKmh / 3.6));
-      const steering = (error: number, velocity: number, nextDisplacement: number): number => {
-        const plannedExitVelocity = nextDisplacement / secondsBetweenTargets;
-        const desiredVelocity = Math.max(-MAX_LATERAL_SPEED_MPS, Math.min(MAX_LATERAL_SPEED_MPS, 2 * error / secondsToTarget - plannedExitVelocity));
-        return desiredVelocity - velocity > 0.7 ? 1 : desiredVelocity - velocity < -0.7 ? -1 : 0;
-      };
-      const xCommand = steering(target.x - optimal.x, optimal.vx, nextTarget.x - target.x);
-      const yCommand = steering(target.y - optimal.y, optimal.vy, nextTarget.y - target.y);
-      const pullActive = optimal.tick + 1 < optimal.pullUntilTick ? optimal.pullDirection : null;
-      const pullX = pullActive === 'right' ? 1 : pullActive === 'left' ? -1 : 0;
-      const pullY = pullActive === 'up' ? 1 : pullActive === 'down' ? -1 : 0;
-      const counterSteer = (desired: number, pull: number): number => {
-        let best = 0; let error = Number.POSITIVE_INFINITY;
-        for (const candidate of [-1, 0, 1]) {
-          const candidateError = Math.abs(candidate + pull - desired);
-          if (candidateError < error) { best = candidate; error = candidateError; }
-        }
-        return best;
-      };
-      const xInput = counterSteer(xCommand, pullX); const yInput = counterSteer(yCommand, pullY);
-      const input: PilotInput = {
-        right: xInput > 0, left: xInput < 0, up: yInput > 0, down: yInput < 0,
-      };
+      const input = optimalPilotInput(optimal, target, nextTarget);
       const result = stepRound(optimal, input, activeCourseWindow(optimalRocks, optimal, optimalWindow));
       for (const hoop of result.cleared) optimalCleared.add(hoop.id);
       optimal = result.state;
@@ -327,4 +372,37 @@ describe('flight simulation', () => {
     expect(optimalRate).toBeGreaterThanOrEqual(ACCEPTANCE_OPTIMAL_CLEAR_FRACTION);
     expect(randomRate).toBeLessThan(ACCEPTANCE_RANDOM_CLEAR_MAX_FRACTION);
   });
+
+  it('flies an optimal generated course for 30 minutes without impact and keeps the collision window bounded', () => {
+    const random = new SeededRandom(0x30f1);
+    let placement = { lastZ: 0, predicted: { x: 0, y: 45, vx: 0, vy: 0 }, nextId: 1 };
+    let elapsed = 0; let speed = START_FORWARD_SPEED_KMH;
+    const generated: Hoop[] = [];
+    while (placement.lastZ < 210_000) {
+      const previousZ = placement.lastZ;
+      const batch = generateHoopBatch(random, placement, elapsed, speed, HOST_HOOPS_AHEAD);
+      generated.push(...batch.hoops);
+      const distance = batch.placement.lastZ - previousZ;
+      elapsed += distance / (speed / 3.6);
+      speed = Math.min(FORWARD_SPEED_CAP_KMH, START_FORWARD_SPEED_KMH + (FORWARD_SPEED_CAP_KMH - START_FORWARD_SPEED_KMH) * Math.min(1, elapsed / SPEED_RAMP_SECONDS));
+      placement = batch.placement;
+    }
+    const rocks = generated.map((rock) => ({ ...rock, cleared: false }));
+    const targets = rocks.filter((rock) => !rock.decoy);
+    const cursor = { index: 0 }; let state = startRound(); let targetIndex = 0; let maximumActiveRocks = 0;
+    for (let tick = 0; tick < 30 * 60 * SIMULATION_HZ; tick++) {
+      while (targetIndex < targets.length && targets[targetIndex]!.cleared) targetIndex++;
+      const target = targets[targetIndex]; const next = targets[Math.min(targetIndex + 1, targets.length - 1)];
+      if (!target || !next) break;
+      const active = activeCourseWindow(rocks, state, cursor);
+      maximumActiveRocks = Math.max(maximumActiveRocks, active.length);
+      state = stepRound(state, optimalPilotInput(state, target, next), active).state;
+      if (state.phase !== 'playing') break;
+    }
+    const retiredRockCount = generated.filter((rock) => rock.z + rock.thickness / 2 + MAX_SHIP_COLLISION_RADIUS_M < state.z - HOOP_CLEANUP_BEHIND_M).length;
+    expect(state.tick).toBe(30 * 60 * SIMULATION_HZ);
+    expect(state.phase).toBe('playing');
+    expect(maximumActiveRocks).toBeLessThan(32);
+    expect(retiredRockCount).toBeGreaterThan(0);
+  }, 20_000);
 });

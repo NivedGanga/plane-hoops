@@ -1,4 +1,4 @@
-import { MAX_SHIP_COLLISION_RADIUS_M } from '../../config/tuning';
+import { MAX_SHIP_COLLISION_RADIUS_M, ROCK_COLLISION_LOOKAHEAD_M } from '../../config/tuning';
 import type { Hoop, PlaneState, Vector2 } from './types';
 
 export interface RockCollision {
@@ -24,7 +24,6 @@ export const SHIP_COLLISION_SPHERES: readonly CollisionSphere[] = [
 
 const SWEEP_STEP_M = 0.25;
 const COLLISION_EPSILON = 1e-7;
-const COLLISION_DISTANCE_M = 1500;
 
 function normalize(x: number, y: number, z: number): Point3 {
   const length = Math.hypot(x, y, z) || 1;
@@ -95,7 +94,7 @@ function lerpPoint(a: Point3, b: Point3, ratio: number): Point3 {
 export function sweptRockCollision(previous: PlaneState, current: PlaneState, rocks: readonly Hoop[]): RockCollision | null {
   let best: RockCollision | null = null;
   const nearbyRocks = rocks.filter((rock) => !rock.cleared
-    && Math.abs(rock.z - current.z) <= COLLISION_DISTANCE_M + rock.thickness / 2 + MAX_SHIP_COLLISION_RADIUS_M);
+    && Math.abs(rock.z - current.z) <= ROCK_COLLISION_LOOKAHEAD_M + rock.thickness / 2 + MAX_SHIP_COLLISION_RADIUS_M);
   if (nearbyRocks.length === 0) return null;
   for (let sphereIndex = 0; sphereIndex < SHIP_COLLISION_SPHERES.length; sphereIndex++) {
     const sphere = SHIP_COLLISION_SPHERES[sphereIndex]!;

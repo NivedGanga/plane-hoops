@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { ACCEPTANCE_NETWORK_TEST_SECONDS, ACCEPTANCE_PACKET_LOSS_FRACTION, ACCEPTANCE_MAX_RTT_MS, SIMULATION_HZ, SNAPSHOTS_PER_SECOND, SHUFFLE_WARNING_SECONDS } from '../config/tuning';
-import { SeededRandom, createPlaneState, generateHoopBatch, initialBindings, inputForSeat, shuffledBindings, startRound, stepRound, type BindingSet, type Hoop, type RoundSnapshot } from '../src/sim';
-import { snapshotFromState } from '../src/net/protocol';
+import { ACCEPTANCE_NETWORK_TEST_SECONDS, ACCEPTANCE_PACKET_LOSS_FRACTION, ACCEPTANCE_MAX_RTT_MS, CRASH_RESULT_DELAY_MS, HOOP_CLEANUP_BEHIND_M, HOST_HOOPS_AHEAD, ROCK_COLLISION_LOOKAHEAD_M, SIMULATION_HZ, SNAPSHOTS_PER_SECOND, SHUFFLE_WARNING_SECONDS } from '../config/tuning';
+import { SeededRandom, createPlaneState, discardHoopsBehind, generateHoopBatch, initialBindings, inputForSeat, shuffledBindings, startRound, stepRound, type BindingSet, type Hoop, type RoundSnapshot } from '../src/sim';
+import { snapshotFromState, type GameEvent } from '../src/net/protocol';
 
 type Packet = { dueMs: number; reliable: boolean; to: number; sequence: number; body: unknown };
 class SimulatedStar {
@@ -45,9 +45,10 @@ describe('simulated host-authoritative multiplayer link', () => {
       }
       const client = clients[packet.to];
       if (body.type === 'shuffle') client.pending = { bindings: body.bindings, tick: body.effectiveTick };
-      if (body.type === 'hoops') { const ids = new Set(client.hoops.map((hoop) => hoop.id)); client.hoops.push(...body.hoops.filter((hoop: Hoop) => !ids.has(hoop.id))); }
+      if (body.type === 'hoop-batch') { const ids = new Set(client.hoops.map((hoop) => hoop.id)); client.hoops.push(...body.hoops.filter((hoop: Hoop) => !ids.has(hoop.id))); }
+      if (body.type === 'rock-removed' || body.type === 'hoop-cleared') client.hoops = client.hoops.filter((hoop) => hoop.id !== body.rockId && hoop.id !== body.hoopId);
       if (body.type === 'snapshot' && body.snapshot.sequence > client.lastSequence) {
-        client.lastSequence = body.snapshot.sequence; client.snapshot = body.snapshot; client.hoops = body.hoops.map((hoop: Hoop) => ({ ...hoop }));
+        client.lastSequence = body.snapshot.sequence; client.snapshot = body.snapshot;
         if (client.pending && body.snapshot.tick >= client.pending.tick) { client.bindings = client.pending.bindings; client.pending = undefined; }
       }
     };
@@ -70,11 +71,19 @@ describe('simulated host-authoritative multiplayer link', () => {
       }
       // Isolate channel convergence from piloting; missed-hoop game-over is tested in sim.test.ts.
       const result = stepRound(state, combined, []); state = result.state;
-      hoops = hoops.filter((hoop) => !hoop.cleared);
-      if (hoops.length < 10) { const batch = generateHoopBatch(random, placement, state.elapsedSeconds, state.speedKmh, 10 - hoops.length); placement = batch.placement; hoops.push(...batch.hoops); for (let index = 0; index < clients.length; index++) link.send(index, ++packetSequence, { type: 'hoops', hoops: batch.hoops }, nowMs, true); }
+      const expired = hoops.filter((hoop) => hoop.z < state.z - HOOP_CLEANUP_BEHIND_M);
+      for (const rock of expired) for (let index = 0; index < clients.length; index++) link.send(index, ++packetSequence, { type: 'rock-removed', rockId: rock.id, tick: state.tick }, nowMs, true);
+      hoops = discardHoopsBehind(hoops, state.z);
+      const primary = hoops.filter((hoop) => !hoop.decoy);
+      const farthestZ = primary.at(-1)?.z ?? state.z;
+      if (primary.length < HOST_HOOPS_AHEAD || farthestZ - state.z < ROCK_COLLISION_LOOKAHEAD_M) {
+        const missing = Math.max(1, HOST_HOOPS_AHEAD - primary.length);
+        const batch = generateHoopBatch(random, placement, state.elapsedSeconds, state.speedKmh, missing); placement = batch.placement; hoops.push(...batch.hoops);
+        for (let index = 0; index < clients.length; index++) link.send(index, ++packetSequence, { type: 'hoop-batch', hoops: batch.hoops }, nowMs, true);
+      }
       if (tick % (SIMULATION_HZ / SNAPSHOTS_PER_SECOND) === 0) {
         const snapshot = snapshotFromState(state, ++packetSequence);
-        for (let index = 0; index < clients.length; index++) link.send(index, snapshot.sequence, { type: 'snapshot', snapshot, bindings, hoops }, nowMs, false);
+        for (let index = 0; index < clients.length; index++) link.send(index, snapshot.sequence, { type: 'snapshot', snapshot, bindings }, nowMs, false);
       }
       link.deliver(nowMs, receivePacket);
       nowMs += 1000 / SIMULATION_HZ;
@@ -82,10 +91,10 @@ describe('simulated host-authoritative multiplayer link', () => {
     }
     // Continue for a short drain window so the final unreliable snapshot can be retransmitted by a later tick.
     for (let drain = 0; drain < SIMULATION_HZ / 2; drain++) {
-      const result = stepRound(state, { up: false, down: false, left: false, right: false }, hoops); state = result.state;
+      const result = stepRound(state, { up: false, down: false, left: false, right: false }, []); state = result.state;
       if (state.tick % (SIMULATION_HZ / SNAPSHOTS_PER_SECOND) === 0) {
         const snapshot = snapshotFromState(state, ++packetSequence);
-        for (let index = 0; index < clients.length; index++) link.send(index, snapshot.sequence, { type: 'snapshot', snapshot, bindings, hoops }, nowMs, false);
+        for (let index = 0; index < clients.length; index++) link.send(index, snapshot.sequence, { type: 'snapshot', snapshot, bindings }, nowMs, false);
       }
       link.deliver(nowMs, receivePacket);
       nowMs += 1000 / SIMULATION_HZ;
@@ -99,4 +108,34 @@ describe('simulated host-authoritative multiplayer link', () => {
       expect(client.bindings).toEqual(bindings);
     }
   }, 20_000);
+
+  it('delivers one authoritative impact and shows results in the same 100 ms window for 2- and 4-player rooms', () => {
+    const crash: GameEvent = {
+      type: 'crash', reason: 'crash', tick: 18_240, score: 310, distance: 24_880, hoopsCleared: 31,
+      rockId: 901, impactPoint: { x: 4.2, y: 46.1, z: 24_880.7 }, shipPosition: { x: 4.1, y: 46, z: 24_881 },
+    };
+    for (const remoteCount of [1, 3]) {
+      const link = new SimulatedStar();
+      const clients = Array.from({ length: remoteCount }, () => ({ crash: undefined as Extract<GameEvent, { type: 'crash' }> | undefined, visibleAt: 0, latestScore: 0 }));
+      let sequence = 0;
+      const startMs = 50_000;
+      for (let index = 0; index < remoteCount; index++) {
+        link.send(index, ++sequence, { type: 'snapshot', snapshot: { tick: crash.tick - 3, score: 300 } }, startMs, false);
+        link.send(index, ++sequence, crash, startMs, true);
+      }
+      const receive = (packet: Packet): void => {
+        const client = clients[packet.to]!; const body = packet.body as { type?: string; score?: number; tick?: number };
+        if (body.type === 'crash') { client.crash = packet.body as Extract<GameEvent, { type: 'crash' }>; client.latestScore = body.score ?? 0; client.visibleAt = packet.dueMs + CRASH_RESULT_DELAY_MS; }
+        else if (body.type === 'snapshot' && !client.crash) client.latestScore = body.score ?? 0;
+      };
+      for (let now = startMs; now <= startMs + ACCEPTANCE_MAX_RTT_MS; now++) link.deliver(now, receive);
+      link.flush(receive);
+      // Model a late unreliable pre-crash snapshot arriving after the reliable terminal event.
+      receive({ to: 0, sequence: ++sequence, body: { type: 'snapshot', snapshot: { tick: crash.tick - 6, score: 280 } }, dueMs: startMs + ACCEPTANCE_MAX_RTT_MS, reliable: false });
+      expect(clients.every((client) => client.crash?.type === 'crash' && client.latestScore === crash.score)).toBe(true);
+      expect(clients.map((client) => client.crash?.tick)).toEqual(Array(remoteCount).fill(crash.tick));
+      expect(Math.max(...clients.map((client) => client.visibleAt)) - Math.min(...clients.map((client) => client.visibleAt))).toBeLessThan(100);
+      expect(clients.every((client) => client.visibleAt >= startMs + CRASH_RESULT_DELAY_MS)).toBe(true);
+    }
+  });
 });

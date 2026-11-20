@@ -19,6 +19,7 @@ export type SignalingEvent =
 export type GameEvent =
   | { type: 'round-start'; seed: number; bindings: BindingSet; tick: number }
   | { type: 'hoop-batch'; hoops: Hoop[] }
+  | { type: 'rock-removed'; rockId: number; tick: number }
   | { type: 'shuffle-command'; bindings: BindingSet; effectiveTick: number; warningSeconds: number }
   | { type: 'hoop-cleared'; hoopId: number; hoopType: Hoop['type']; score: number; tick: number }
   | { type: 'booster-activated'; untilTick: number; score: number; tick: number }
@@ -31,7 +32,7 @@ export type GameEvent =
   | { type: 'warning'; message: string; untilTick: number };
 
 export interface InputPacket { type: 'input'; sequence: number; heldKeyMask: number; clientTick: number }
-export interface StatePacket { type: 'state'; snapshot: RoundSnapshot; bindings: BindingSet; hoops: Hoop[] }
+export interface StatePacket { type: 'state'; snapshot: RoundSnapshot; bindings: BindingSet }
 export function snapshotFromState(state: PlaneState, sequence: number): RoundSnapshot {
   return {
     tick: state.tick, sequence, x: state.x, y: state.y, z: state.z, vx: state.vx, vy: state.vy,

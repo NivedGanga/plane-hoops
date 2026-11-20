@@ -2,8 +2,8 @@
 
 - Project is dedicated to this game in the only connected Supabase organization, in `ap-south-1`; the connector quoted $0/month.
 - On `plane-hoops-production`, anonymous sign-ins are enabled and a real `signInAnonymously()` call succeeded. The schema and the leaderboard-name normalization correction are applied and recorded; live test accounts and rows were removed afterward.
-- The public GitHub repository is `NivedGanga/plane-hoops`. An authenticated browser was used to create a separate Vercel project, `plane-hoops-supabase`, at https://plane-hoops-supabase.vercel.app. Its production branch is `supabase-implementation`, with the Supabase URL and public key configured.
-- While pushing the final work, `main` was independently force-updated to a different Firebase implementation with unrelated history. To avoid overwriting that work, this Supabase implementation is preserved on `supabase-implementation`, not the default branch.
+- The public GitHub repository is `NivedGanga/plane-hoops`; its existing Vercel project is `plane-hoops-supabase` at https://plane-hoops-supabase.vercel.app. The follow-up requires the production Supabase app on `main`, with its existing URL and public-key environment variables retained.
+- Superseded: `main` originally held an unrelated Firebase lineage, so the first deployment stayed on `supabase-implementation`; the follow-up safely joined both histories locally and moved the Supabase app onto `main` without force-pushing.
 - The GitHub Actions CI job did not start: GitHub reported the account is locked due to a billing issue. Local typecheck, tests and build passed, but this is not a passing remote CI run.
 - Metered Open Relay is the planned free-tier TURN provider, with server-only `METERED_DOMAIN` and `METERED_SECRET_KEY`; its published free allowance is 20 GB/month. No credentials were available, so STUN-only is the fallback and some networks cannot connect.
 - Metered notes that fresh credentials can take up to two minutes to propagate and expire during ongoing sessions; production TURN rotation and long-session behavior need validation before relying on the fallback-resistant relay.
@@ -15,11 +15,11 @@
 - A post-run lobby action and authoritative reliable final results were added; silently disconnected remote seats may not be reclaimed because signaling has no peer-presence/leave detection yet.
 - Supabase signaling uses database inserts and Realtime rather than a custom signaling server, to match the requested infrastructure.
 - The connected Supabase migration tool applied both migrations; the local files match its recorded versions: initial `20261119175502` and normalization correction `20261119175612`.
-- A maximum of ten future hoops is used for a compact reliable buffer; booster share is 18% and generated course geometry is seeded for repeatable play.
+- At least ten scored holes and the full 1,500 m solid-rock collision horizon stay buffered; reliable add/remove events carry static geometry once while compact snapshots carry only flight state.
 - The default STUN server is `stun:stun.l.google.com:19302`; no static TURN secret is put in frontend variables.
 - Supabase's security advisor flags `get_room` as `SECURITY DEFINER` and warns that the intended RLS policies also apply to anonymous signed-in users (who use the `authenticated` role). Review these policies and add CAPTCHA/rate-limit abuse controls before treating the service as production-hardened.
 - The initial missed-hoop crash rule below was superseded by the 2026-11-20 follow-up: a miss only continues play unless the ship actually contacts rock; crash sound and UI copy now represent rock impact. Sound effects remain synthesized with Web Audio.
-- GitHub `main` had an unrelated Firebase lineage; it is retained as a secondary merge parent while the deployed Supabase tree remains primary, avoiding a force-push and preserving both histories.
+- GitHub `main`'s unrelated Firebase history is retained as a secondary merge parent, while the Supabase implementation is the production tree; this preserves both histories without a force-push and honors the requested Vercel branch.
 - The lane and its boundary/grid visuals are removed; an always-dark procedural starfield, faint generated nebula, fixed key light, and speed-scaled dust establish space without downloaded art.
 - The existing HUD keeps its IDs and metrics, while the control map occupies the middle grid column so score/time cards cannot cover it at the requested desktop widths.
 - Visible game copy uses “ship” and “holes,” with the hint line exactly matching the requested wording; internal hoop identifiers stay unchanged.
@@ -38,3 +38,12 @@
 - Rock transforms stay static instead of pulsing or tumbling, because animated geometry would diverge from the host's authoritative collider.
 - Crash breakup detaches the existing ship mesh parts and adds 96 seeded spark particles for 1.35 s, keeping the effect synchronized and free of external art assets.
 - A desktop browser smoke test inspects the single ExtrudeGeometry bore and verifies the explosion hides the ship and restart rebuilds it.
+- The white flash, expanding shockwave and seeded sparks begin from the reliable host impact event, with a 0.6 s camera shake and a two-second results delay so every peer can see the full blast before the overlay.
+- Late unordered snapshots are ignored once a crash event arrives, because stale flight state must never undo the authoritative terminal tick or score during the blast.
+- Rock batches and retirements use the reliable ordered event channel instead of 20 Hz snapshots, because static 24-point outlines are much larger than changing flight state.
+- Host generation keeps both ten scored targets and 1,500 m of future solids buffered, because the collision broadphase must never see a missing rock before it reaches the player.
+- Acceptance now includes 10,000 seeded 320 km/h minimum-thickness collision approaches and a 30-minute optimal generated-course run, because a single-hole test cannot prove tunneling resistance or long-run fairness.
+- A desktop browser cycles 120 asteroid batches and checks live mesh/GPU geometry counts, because disposed rock assets must not accumulate during an endless run.
+- The game-active state hides the lobby wordmark behind the HUD because its trailing letters caused the visible “L” and “FL” fragments; the brand returns in the lobby.
+- Playwright captures HUD screenshots at 1280, 1920 and 2560 px after bounds and copy assertions because visual acceptance needs rendered evidence at each requested width.
+- Corridor clearance is checked across 128 independent seeds because one randomized course cannot characterize all generated side-rock layouts.

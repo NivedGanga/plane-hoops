@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { CRASH_CAMERA_SHAKE_SECONDS } from '../../config/tuning';
 import type { Hoop, PlaneState } from '../sim/types';
 
 const SCALE = 0.12;
@@ -11,12 +12,6 @@ type DebrisPiece = { object: THREE.Object3D; velocity: THREE.Vector3; spin: THRE
 function seeded(seed: number): () => number {
   let state = seed >>> 0;
   return () => { state = (state * 1664525 + 1013904223) >>> 0; return state / 4294967296; };
-}
-
-function lineLoop(points: THREE.Vector3[], color: number, opacity = 0.95): THREE.LineLoop {
-  const geometry = new THREE.BufferGeometry().setFromPoints(points);
-  const material = new THREE.LineBasicMaterial({ color, transparent: opacity < 1, opacity, toneMapped: false });
-  return new THREE.LineLoop(geometry, material);
 }
 
 function disposeObject(root: THREE.Object3D): void {
@@ -64,6 +59,18 @@ function createNebula(): THREE.Sprite {
   const material = new THREE.SpriteMaterial({ map: texture, transparent: true, opacity: 0.52, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false });
   const sprite = new THREE.Sprite(material); sprite.position.set(-14, 6, -88); sprite.scale.set(84, 42, 1); sprite.renderOrder = -2;
   return sprite;
+}
+
+function createFlashTexture(): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas'); canvas.width = 128; canvas.height = 128;
+  const context = canvas.getContext('2d');
+  if (context) {
+    const glow = context.createRadialGradient(64, 64, 0, 64, 64, 64);
+    glow.addColorStop(0, 'rgba(255,255,255,1)'); glow.addColorStop(0.22, 'rgba(255,255,255,.92)');
+    glow.addColorStop(0.62, 'rgba(255,255,255,.24)'); glow.addColorStop(1, 'rgba(255,255,255,0)');
+    context.fillStyle = glow; context.fillRect(0, 0, 128, 128);
+  }
+  const texture = new THREE.CanvasTexture(canvas); texture.colorSpace = THREE.SRGBColorSpace; return texture;
 }
 
 function createStars(count: number, seed: number, size: number, color: number, opacity: number): THREE.Points {
@@ -199,10 +206,14 @@ export class FlightWorld {
   private explosionPieces: DebrisPiece[] = [];
   private explosionParticles?: THREE.Points;
   private explosionGeometry?: THREE.BufferGeometry;
+  private explosionFlash?: THREE.Sprite;
+  private explosionFlashTexture?: THREE.CanvasTexture;
+  private shockwave?: THREE.Mesh;
   private particlePositions: THREE.Vector3[] = [];
   private particleVelocities: THREE.Vector3[] = [];
   private explosionStarted = false;
   private explosionElapsed = 0;
+  private explosionSeed = 0;
   private lastRenderSeconds?: number;
   private hoops = new Map<number, { mesh: THREE.Group; signature: string }>();
   private starLayers: StarLayer[] = [];
@@ -241,7 +252,11 @@ export class FlightWorld {
     for (const piece of this.explosionPieces) { this.scene.remove(piece.object); disposeObject(piece.object); }
     this.explosionPieces = [];
     if (this.explosionParticles) { this.scene.remove(this.explosionParticles); disposeObject(this.explosionParticles); }
+    if (this.explosionFlash) { this.scene.remove(this.explosionFlash); disposeObject(this.explosionFlash); }
+    this.explosionFlashTexture?.dispose();
+    if (this.shockwave) { this.scene.remove(this.shockwave); disposeObject(this.shockwave); }
     this.explosionParticles = undefined; this.explosionGeometry = undefined;
+    this.explosionFlash = undefined; this.explosionFlashTexture = undefined; this.shockwave = undefined;
     this.particlePositions = []; this.particleVelocities = [];
   }
   reset(): void {
@@ -256,7 +271,8 @@ export class FlightWorld {
     this.ship.rotation.y = -Math.atan(state.headingX); this.ship.rotation.x = Math.atan(state.headingY);
     this.ship.rotation.z = -Math.max(-0.28, Math.min(0.28, state.headingX * 1.7));
     const origin = new THREE.Vector3(impactPoint.x * SCALE, (impactPoint.y - 45) * SCALE, -(impactPoint.z - state.z) * SCALE);
-    const random = seeded((rockId * 0x9e3779b1 + state.tick * 0x85ebca6b) >>> 0);
+    this.explosionSeed = (rockId * 0x9e3779b1 + state.tick * 0x85ebca6b) >>> 0;
+    const random = seeded(this.explosionSeed);
     for (const [index, part] of [...this.ship.children].entries()) {
       this.scene.attach(part); cloneMaterials(part);
       const direction = part.position.clone().sub(origin);
@@ -266,8 +282,13 @@ export class FlightWorld {
       this.explosionPieces.push({ object: part, velocity: direction, spin: new THREE.Vector3(random() - 0.5, random() - 0.5, random() - 0.5).multiplyScalar(4 + index % 3) });
     }
     this.ship.visible = false;
-    const flash = new THREE.PointLight(0x8feeff, 6, 8); flash.position.copy(origin); this.scene.add(flash);
+    const flash = new THREE.PointLight(0xffffff, 12, 10); flash.position.copy(origin); this.scene.add(flash);
     this.explosionPieces.push({ object: flash, velocity: new THREE.Vector3(), spin: new THREE.Vector3() });
+    this.explosionFlashTexture = createFlashTexture();
+    this.explosionFlash = new THREE.Sprite(new THREE.SpriteMaterial({ map: this.explosionFlashTexture, color: 0xffffff, transparent: true, opacity: 0.98, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false }));
+    this.explosionFlash.position.copy(origin); this.explosionFlash.scale.set(0.42, 0.42, 1); this.scene.add(this.explosionFlash);
+    this.shockwave = new THREE.Mesh(new THREE.TorusGeometry(0.16, 0.025, 8, 48), new THREE.MeshBasicMaterial({ color: 0xeaf8ff, transparent: true, opacity: 0.95, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide, toneMapped: false }));
+    this.shockwave.position.copy(origin); this.scene.add(this.shockwave);
 
     const count = 96; const values = new Float32Array(count * 3);
     this.particlePositions = []; this.particleVelocities = [];
@@ -294,7 +315,16 @@ export class FlightWorld {
       piece.object.position.addScaledVector(piece.velocity, dt);
       piece.object.rotation.x += piece.spin.x * dt; piece.object.rotation.y += piece.spin.y * dt; piece.object.rotation.z += piece.spin.z * dt;
       setOpacity(piece.object, fade);
-      if (piece.object instanceof THREE.PointLight) piece.object.intensity = 6 * Math.max(0, 1 - this.explosionElapsed / 0.28);
+      if (piece.object instanceof THREE.PointLight) piece.object.intensity = 12 * Math.max(0, 1 - this.explosionElapsed / 0.24);
+    }
+    if (this.explosionFlash) {
+      const flashProgress = Math.min(1, this.explosionElapsed / 0.22);
+      this.explosionFlash.material.opacity = Math.max(0, 0.98 * (1 - flashProgress));
+      this.explosionFlash.scale.setScalar(0.42 + flashProgress * 1.45);
+    }
+    if (this.shockwave) {
+      this.shockwave.scale.setScalar(1 + this.explosionElapsed * 5.5);
+      (this.shockwave.material as THREE.MeshBasicMaterial).opacity = Math.max(0, 0.95 * (1 - this.explosionElapsed / 0.9));
     }
     const attribute = this.explosionGeometry?.getAttribute('position') as THREE.BufferAttribute | undefined;
     if (attribute) {
@@ -310,6 +340,7 @@ export class FlightWorld {
     if (this.explosionElapsed >= 1.35) this.clearExplosion();
   }
   render(state: PlaneState, activeHoops: Hoop[], timeSeconds: number): void {
+    this.updateExplosion(timeSeconds);
     if (!this.explosionStarted) {
       this.ship.position.set(state.x * SCALE, (state.y - 45) * SCALE, 0);
       this.ship.rotation.y = -Math.atan(state.headingX);
@@ -322,6 +353,12 @@ export class FlightWorld {
       thruster.scale.set(1, 1, 0.7 + speedFactor * 0.8);
     }
     this.camera.position.set(state.x * SCALE, (state.y - 45) * SCALE + 2.0, 8.5);
+    if (this.explosionStarted && this.explosionElapsed < CRASH_CAMERA_SHAKE_SECONDS) {
+      const envelope = 1 - this.explosionElapsed / CRASH_CAMERA_SHAKE_SECONDS;
+      const phase = this.explosionElapsed * 75;
+      this.camera.position.x += Math.sin(phase + (this.explosionSeed & 255)) * 0.16 * envelope;
+      this.camera.position.y += Math.sin(phase * 1.31 + (this.explosionSeed >>> 8 & 255)) * 0.11 * envelope;
+    }
     this.camera.lookAt(state.x * SCALE, (state.y - 45) * SCALE, -9);
     for (const layer of this.starLayers) {
       layer.points.position.set(state.x * SCALE * layer.parallax, (state.y - 45) * SCALE * layer.parallax, (state.z * SCALE * layer.drift) % 28);
@@ -352,7 +389,6 @@ export class FlightWorld {
       item.mesh.scale.setScalar(1);
     }
     for (const [id, item] of this.hoops) if (!known.has(id)) { this.scene.remove(item.mesh); disposeObject(item.mesh); this.hoops.delete(id); }
-    this.updateExplosion(timeSeconds);
     this.renderer.render(this.scene, this.camera);
   }
   dispose(): void {

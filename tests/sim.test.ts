@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   ACCEPTANCE_SIM_TICKS, ACCEPTANCE_OPTIMAL_CLEAR_FRACTION, ACCEPTANCE_RANDOM_CLEAR_MAX_FRACTION,
   FORWARD_SPEED_CAP_KMH, HALF_WIDTH_M, SIMULATION_HZ, START_FORWARD_SPEED_KMH, HOOP_CLEANUP_BEHIND_M,
+  HOOP_MINIMUM_CLEARANCE_M, MAX_SHIP_COLLISION_RADIUS_M, ROCK_OUTLINE_POINTS,
+  ROCK_THICKNESS_MIN_M, ROCK_THICKNESS_MAX_M, HOOP_SPACING_MIN_M, HOOP_SPACING_MAX_M,
   SHUFFLE_INTERVAL_END_MIN_SECONDS, SHUFFLE_INTERVAL_END_MAX_SECONDS,
   SPEED_RAMP_SECONDS, LATERAL_ACCELERATION_MPS2, MAX_LATERAL_SPEED_MPS,
 } from '../config/tuning';
@@ -13,12 +15,19 @@ import {
 import type { Hoop, PilotInput } from '../src/sim';
 
 const neutral: PilotInput = { up: false, down: false, left: false, right: false };
+function testHoop(overrides: Partial<Hoop> = {}): Hoop {
+  const outline = Array.from({ length: 24 }, (_, index) => {
+    const angle = index * Math.PI * 2 / 24;
+    return { x: Math.cos(angle) * 10, y: Math.sin(angle) * 10 };
+  });
+  return { id: 1, type: 'standard', x: 0, y: 45, z: 4, radius: 2, thickness: 4, outline, decoy: false, arrow: null, cleared: false, ...overrides };
+}
 
 describe('flight simulation', () => {
   it('holds difficulty progression to the 10-minute endpoint and tunes shuffle intervals to 10-14s', () => {
     const early = generateHoopBatch(new SeededRandom(17), { lastZ: 0, predicted: { x: 0, y: 45, vx: 0, vy: 0 }, nextId: 1 }, 0, 210, 1).hoops[0]!;
     const late = generateHoopBatch(new SeededRandom(17), { lastZ: 0, predicted: { x: 0, y: 45, vx: 0, vy: 0 }, nextId: 1 }, 600, 320, 1).hoops[0]!;
-    expect(early.radius).toBe(10); expect(late.radius).toBe(6);
+    expect(early.radius).toBe(9); expect(late.radius).toBe(5.5);
     expect(SHUFFLE_INTERVAL_END_MIN_SECONDS).toBe(10); expect(SHUFFLE_INTERVAL_END_MAX_SECONDS).toBe(14);
     let state = startRound();
     for (let i = 0; i < 600 * SIMULATION_HZ; i++) state = tickPhysics(state, neutral);
@@ -32,9 +41,10 @@ describe('flight simulation', () => {
       let placement = { lastZ: 0, predicted: { x: 0, y: 45, vx: 0, vy: 0 }, nextId: 1 };
       let random = new SeededRandom(seed); let hoops: Hoop[] = []; let generated = 0;
       for (let t = 0; t < 30 * 60 * SIMULATION_HZ; t++) {
-        if (hoops.length < 12) {
+        if (hoops.filter((hoop) => !hoop.decoy).length < 12) {
           const batch = generateHoopBatch(random, placement, state.elapsedSeconds, state.speedKmh, 10);
-          hoops.push(...batch.hoops); placement = batch.placement; generated += batch.hoops.length;
+          hoops.push(...batch.hoops); placement = batch.placement;
+          generated += batch.hoops.filter((hoop) => !hoop.decoy).length;
         }
         // This long run exercises flight physics and hoop cleanup; collision outcomes are tested separately.
         state = stepRound(state, neutral, []).state;
@@ -45,7 +55,7 @@ describe('flight simulation', () => {
     };
     const a = simulate(0x102030); const b = simulate(0x102030);
     expect(a.state.phase).toBe('playing'); expect(a.state.tick).toBe(108_000);
-    expect(a.generated).toBeGreaterThan(800); expect(a.hoops.length).toBeLessThanOrEqual(20);
+    expect(a.generated).toBeGreaterThan(800); expect(a.hoops.length).toBeLessThanOrEqual(32);
     expect(a.hoops.every((h) => h.z >= a.state.z - HOOP_CLEANUP_BEHIND_M)).toBe(true);
     expect(a.state).toEqual(b.state); expect(a.hoops).toEqual(b.hoops);
     expect(a.state.speedKmh).toBeCloseTo(FORWARD_SPEED_CAP_KMH, 8);
@@ -71,7 +81,7 @@ describe('flight simulation', () => {
         up: random.next() < 0.2, down: random.next() < 0.2,
         left: random.next() < 0.2, right: random.next() < 0.2,
       };
-      if (tick % 900 === 0) state = activateHoopEffect(state, { id: tick, type: 'magnetic', x: 0, y: 45, z: 0, radius: 10, arrow: 'left', cleared: false });
+      if (tick % 900 === 0) state = activateHoopEffect(state, testHoop({ id: tick, type: 'magnetic', radius: 10, arrow: 'left' }));
       state = tickPhysics(state, input);
       expect(state.speedKmh).toBeGreaterThanOrEqual(200);
       expect(state.speedKmh).toBeLessThanOrEqual(FORWARD_SPEED_CAP_KMH);
@@ -97,14 +107,14 @@ describe('flight simulation', () => {
   });
 
   it('uses a swept segment check so a fast plane cannot skip a hoop', () => {
-    const hoop: Hoop = { id: 1, type: 'standard', x: 2, y: 48, z: 4, radius: 2, arrow: null, cleared: false };
+    const hoop = testHoop({ id: 1, x: 2, y: 48, z: 4 });
     expect(sweptHoopCrossing(0, 8, { x: 0, y: 45, z: 0 }, { x: 4, y: 51, z: 8 }, hoop)).toBe(true);
     expect(sweptHoopCrossing(0, 8, { x: 0, y: 45, z: 0 }, { x: 12, y: 45, z: 8 }, hoop)).toBe(false);
   });
 
   it('ends the round on the first missed hoop but keeps a successful hoop clear in play', () => {
     const state = startRound();
-    const missedHoop: Hoop = { id: 1, type: 'standard', x: 12, y: 45, z: 0.5, radius: 2, arrow: null, cleared: false };
+    const missedHoop = testHoop({ id: 1, x: 12, z: 0.5 });
     const missed = stepRound(state, neutral, [missedHoop]);
     expect(missed.missed).toEqual([missedHoop]);
     expect(missed.state.phase).toBe('ended');
@@ -112,7 +122,7 @@ describe('flight simulation', () => {
     expect(missedHoop.cleared).toBe(true);
     expect(stepRound(missed.state, neutral, []).state).toBe(missed.state);
 
-    const clearedHoop: Hoop = { id: 2, type: 'standard', x: 0, y: 45, z: 0.5, radius: 2, arrow: null, cleared: false };
+    const clearedHoop = testHoop({ id: 2, z: 0.5 });
     const cleared = stepRound(state, neutral, [clearedHoop]);
     expect(cleared.cleared).toEqual([clearedHoop]);
     expect(cleared.missed).toEqual([]);
@@ -121,7 +131,7 @@ describe('flight simulation', () => {
   });
 
   it('applies cooperative team scoring and booster/magnetic effects without changing forward speed', () => {
-    const hoop: Hoop = { id: 1, type: 'booster', x: 0, y: 45, z: 0, radius: 10, arrow: null, cleared: false };
+    const hoop = testHoop({ id: 1, type: 'booster', z: 0, radius: 10 });
     const boosted = activateHoopEffect(startRound(), hoop);
     expect(boosted.score).toBe(20);
     expect(boosted.boosterUntilTick).toBeGreaterThan(boosted.tick);
@@ -172,17 +182,24 @@ describe('flight simulation', () => {
     }
   });
 
-  it('generates 1,000 hoops that pass the placement and chain reachability test', () => {
+  it('generates 1,000 primary holes with legal rock geometry and chain reachability', () => {
     const random = new SeededRandom(0xc0ffee);
     let placement = { lastZ: 0, predicted: { x: 0, y: 45, vx: 0, vy: 0 }, nextId: 1 };
     let checked = 0;
     while (checked < 1000) {
       const batch = generateHoopBatch(random, placement, 95, 260, Math.min(10, 1000 - checked));
       let previousZ = placement.lastZ; let previous = placement.predicted;
-      for (const hoop of batch.hoops) {
+      for (const hoop of batch.hoops.filter((item) => !item.decoy)) {
         expect(hoopReachable(previous, hoop, previousZ, 260)).toBe(true);
-        expect(hoop.radius).toBeGreaterThanOrEqual(6);
-        expect(hoop.radius).toBeLessThanOrEqual(10);
+        expect(hoop.radius).toBeGreaterThanOrEqual(5.5);
+        expect(hoop.radius).toBeLessThanOrEqual(9);
+        expect(hoop.radius - MAX_SHIP_COLLISION_RADIUS_M).toBeGreaterThanOrEqual(HOOP_MINIMUM_CLEARANCE_M);
+        expect(hoop.thickness).toBeGreaterThanOrEqual(ROCK_THICKNESS_MIN_M);
+        expect(hoop.thickness).toBeLessThanOrEqual(ROCK_THICKNESS_MAX_M);
+        expect(hoop.outline).toHaveLength(ROCK_OUTLINE_POINTS);
+        expect(hoop.outline.every((point) => Math.hypot(point.x, point.y) > hoop.radius + 6)).toBe(true);
+        if (previousZ > 0) expect(hoop.z - previousZ).toBeGreaterThanOrEqual(HOOP_SPACING_MIN_M);
+        if (previousZ > 0) expect(hoop.z - previousZ).toBeLessThanOrEqual(HOOP_SPACING_MAX_M);
         if (hoop.type === 'magnetic') expect(['up', 'down', 'left', 'right']).toContain(hoop.arrow);
         previousZ = hoop.z; previous = { x: hoop.x, y: hoop.y, vx: 0, vy: 0 };
         checked++;
@@ -191,21 +208,43 @@ describe('flight simulation', () => {
     }
   });
 
+  it('increases side-rock density and shortens primary spacing across the first ten minutes', () => {
+    const collect = (elapsedSeconds: number, speed: number) => {
+      const random = new SeededRandom(0xdecafbad);
+      let placement = { lastZ: 0, predicted: { x: 0, y: 45, vx: 0, vy: 0 }, nextId: 1 };
+      const main: Hoop[] = []; const decoys: Hoop[] = [];
+      while (main.length < 80) {
+        const batch = generateHoopBatch(random, placement, elapsedSeconds, speed, Math.min(10, 80 - main.length));
+        main.push(...batch.hoops.filter((hoop) => !hoop.decoy));
+        decoys.push(...batch.hoops.filter((hoop) => hoop.decoy));
+        placement = batch.placement;
+      }
+      return { main, decoys };
+    };
+    const early = collect(0, 210); const late = collect(600, 320);
+    const averageSpacing = (course: Hoop[]) => course.slice(1).reduce((sum, hoop, index) => sum + hoop.z - course[index]!.z, 0) / (course.length - 1);
+    expect(late.decoys.length).toBeGreaterThan(early.decoys.length * 2);
+    expect(averageSpacing(late.main)).toBeLessThan(averageSpacing(early.main));
+  });
+
   it('optimal lookahead clears at least 95% while random held keys clear under 10% of a seeded 1,000-hoop course', () => {
     const courseRandom = new SeededRandom(941);
     let placement = { lastZ: 0, predicted: { x: 0, y: 45, vx: 0, vy: 0 }, nextId: 1 };
     const course: Hoop[] = [];
     let courseElapsed = 0; let courseSpeed = START_FORWARD_SPEED_KMH;
-    while (course.length < 1000) {
+    let mainCount = 0;
+    while (mainCount < 1000) {
       const batch = generateHoopBatch(courseRandom, placement, courseElapsed, courseSpeed, 1);
       course.push(...batch.hoops);
+      mainCount += batch.hoops.filter((hoop) => !hoop.decoy).length;
       const segmentDistance = batch.placement.lastZ - placement.lastZ;
       courseElapsed += segmentDistance / (courseSpeed / 3.6);
       courseSpeed = Math.min(FORWARD_SPEED_CAP_KMH, START_FORWARD_SPEED_KMH + (FORWARD_SPEED_CAP_KMH - START_FORWARD_SPEED_KMH) * Math.min(1, courseElapsed / SPEED_RAMP_SECONDS));
       placement = batch.placement;
     }
     // The optimal pilot brakes toward each center while following the speed-ramped route.
-    let optimal = startRound(); let optimalHoops = course.map((hoop) => ({ ...hoop, cleared: false }));
+    const scoringCourse = course.filter((hoop) => !hoop.decoy).slice(0, 1000);
+    let optimal = startRound(); let optimalHoops = scoringCourse.map((hoop) => ({ ...hoop, cleared: false }));
     let targetIndex = 0; const optimalCleared = new Set<number>();
     while (targetIndex < optimalHoops.length && optimal.phase === 'playing') {
       const target = optimalHoops[targetIndex];
@@ -243,7 +282,7 @@ describe('flight simulation', () => {
       if (optimal.tick > 200_000) break;
     }
     const optimalRate = optimalCleared.size / 1000;
-    let randomPilot = startRound(); const randomHoops = course.map((hoop) => ({ ...hoop, cleared: false })); const random = new SeededRandom(1941);
+    let randomPilot = startRound(); const randomHoops = scoringCourse.map((hoop) => ({ ...hoop, cleared: false })); const random = new SeededRandom(1941);
     const randomCleared = new Set<number>();
     for (let tick = 0; tick < 28_000 && randomPilot.phase === 'playing'; tick++) {
       const result = stepRound(randomPilot, { up: random.next() < 0.5, down: random.next() < 0.5, left: random.next() < 0.5, right: random.next() < 0.5 }, randomHoops);

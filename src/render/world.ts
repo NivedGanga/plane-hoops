@@ -18,6 +18,16 @@ function lineLoop(points: THREE.Vector3[], color: number, opacity = 0.95): THREE
   return new THREE.LineLoop(geometry, material);
 }
 
+function disposeObject(root: THREE.Object3D): void {
+  root.traverse((object) => {
+    const drawable = object as THREE.Mesh;
+    if (drawable.geometry) drawable.geometry.dispose();
+    const material = drawable.material;
+    if (Array.isArray(material)) material.forEach((item) => item.dispose());
+    else material?.dispose();
+  });
+}
+
 function createNebula(): THREE.Sprite {
   const canvas = document.createElement('canvas'); canvas.width = 512; canvas.height = 256;
   const context = canvas.getContext('2d');
@@ -85,36 +95,79 @@ function createStarship(): THREE.Group {
   return root;
 }
 
-function createHoop(hoop: Hoop): THREE.Group {
+function pointInOutline(x: number, y: number, outline: Hoop['outline']): boolean {
+  let inside = false;
+  for (let i = 0, j = outline.length - 1; i < outline.length; j = i++) {
+    const a = outline[i]!; const b = outline[j]!;
+    if ((a.y > y) !== (b.y > y) && x < (b.x - a.x) * (y - a.y) / (b.y - a.y) + a.x) inside = !inside;
+  }
+  return inside;
+}
+
+function createRock(hoop: Hoop): THREE.Group {
   const root = new THREE.Group();
-  const color = colors[hoop.type];
-  const radius = hoop.radius * SCALE;
-  if (hoop.type === 'standard') {
-    const ring = new THREE.Mesh(new THREE.TorusGeometry(radius, 0.075, 10, 40), new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 1.2, roughness: 0.28, metalness: 0.24 }));
-    root.add(ring);
-  } else {
-    const sides = hoop.type === 'booster' ? 4 : 6;
-    const points = Array.from({ length: sides }, (_, index) => {
-      const angle = Math.PI * 2 * index / sides + (hoop.type === 'booster' ? Math.PI / 4 : Math.PI / 6);
-      return new THREE.Vector3(Math.cos(angle) * radius, Math.sin(angle) * radius, 0);
-    });
-    root.add(lineLoop(points, color));
-    root.add(lineLoop(points.map((p) => p.clone().multiplyScalar(0.92)), color, 0.35));
+  const color = hoop.decoy ? 0x9299a1 : hoop.type === 'standard' ? 0x6f7b89 : hoop.type === 'booster' ? 0x566f78 : 0x716b80;
+  const stone = new THREE.Shape();
+  hoop.outline.forEach((point, index) => {
+    const x = point.x * SCALE; const y = point.y * SCALE;
+    if (index === 0) stone.moveTo(x, y); else stone.lineTo(x, y);
+  });
+  stone.closePath();
+  const bore = new THREE.Path(); bore.absarc(0, 0, hoop.radius * SCALE, 0, Math.PI * 2, true); stone.holes.push(bore);
+  const thickness = hoop.thickness * SCALE;
+  const frontFace = thickness / 2;
+  const geometry = new THREE.ExtrudeGeometry(stone, {
+    depth: thickness, bevelEnabled: true, bevelSegments: 2,
+    bevelSize: 0.035, bevelThickness: 0.035, curveSegments: 40,
+  });
+  const position = geometry.getAttribute('position'); const vertexColors = new Float32Array(position.count * 3);
+  const baseColor = new THREE.Color(color);
+  for (let index = 0; index < position.count; index++) {
+    const x = position.getX(index) / SCALE; const y = position.getY(index) / SCALE;
+    const grain = 0.78 + (Math.sin(x * 0.71 + hoop.id * 1.37) * Math.cos(y * 0.83 - hoop.id * 0.91) + 1) * 0.115;
+    const vertex = baseColor.clone().multiplyScalar(grain);
+    vertexColors[index * 3] = vertex.r; vertexColors[index * 3 + 1] = vertex.g; vertexColors[index * 3 + 2] = vertex.b;
+  }
+  geometry.setAttribute('color', new THREE.BufferAttribute(vertexColors, 3));
+  const rockMaterial = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.96, metalness: 0.06, flatShading: true });
+  const rock = new THREE.Mesh(geometry, rockMaterial); rock.position.z = -thickness / 2; root.add(rock);
+
+  const rockRandom = seeded(hoop.id * 0x9e3779b1 + 71);
+  const craterMaterial = new THREE.MeshStandardMaterial({ color: 0x222a34, roughness: 1, metalness: 0, transparent: true, opacity: 0.72, side: THREE.DoubleSide, depthWrite: false });
+  const craterCount = 4 + Math.floor(rockRandom() * 4);
+  for (let crater = 0; crater < craterCount; crater++) {
+    for (let attempt = 0; attempt < 12; attempt++) {
+      const angle = rockRandom() * Math.PI * 2;
+      const distance = hoop.radius + 2.6 + rockRandom() * 7;
+      const x = Math.cos(angle) * distance; const y = Math.sin(angle) * distance;
+      if (!pointInOutline(x, y, hoop.outline)) continue;
+      const craterRadius = (0.45 + rockRandom() * 0.95) * SCALE;
+      const pit = new THREE.Mesh(new THREE.CircleGeometry(craterRadius, 14), craterMaterial);
+      pit.position.set(x * SCALE, y * SCALE, frontFace + 0.016); root.add(pit);
+      break;
+    }
+  }
+
+  const rimColor = colors[hoop.type];
+  const stoneRim = new THREE.Mesh(new THREE.TorusGeometry(hoop.radius * SCALE, 0.033, 8, 48), new THREE.MeshStandardMaterial({ color: 0xd0d7de, metalness: 0.64, roughness: 0.31, emissive: rimColor, emissiveIntensity: hoop.decoy ? 0.08 : 0.55 }));
+  stoneRim.position.z = frontFace + 0.025; root.add(stoneRim);
+  if (!hoop.decoy) {
+    const accentRim = new THREE.Mesh(new THREE.TorusGeometry((hoop.radius + 0.62) * SCALE, 0.018, 6, 48), new THREE.MeshBasicMaterial({ color: rimColor, transparent: true, opacity: 0.7, toneMapped: false }));
+    accentRim.position.z = frontFace + 0.021; root.add(accentRim);
     if (hoop.type === 'booster') {
       const lightning = new THREE.Shape();
       lightning.moveTo(0.08, 0.36); lightning.lineTo(-0.19, 0.02); lightning.lineTo(-0.02, 0.02);
       lightning.lineTo(-0.12, -0.35); lightning.lineTo(0.2, 0.02); lightning.lineTo(0.03, 0.02); lightning.closePath();
       const bolt = new THREE.Mesh(new THREE.ShapeGeometry(lightning), new THREE.MeshBasicMaterial({ color: 0xfff2ca, side: THREE.DoubleSide, toneMapped: false }));
-      root.add(bolt);
-    } else if (hoop.arrow) {
+      bolt.position.z = frontFace + 0.033; root.add(bolt);
+    } else if (hoop.type === 'magnetic' && hoop.arrow) {
       const vector = hoop.arrow === 'up' ? new THREE.Vector3(0, 1, 0)
         : hoop.arrow === 'down' ? new THREE.Vector3(0, -1, 0)
         : hoop.arrow === 'left' ? new THREE.Vector3(-1, 0, 0) : new THREE.Vector3(1, 0, 0);
-      const shaft = new THREE.ArrowHelper(vector, new THREE.Vector3(0, 0, 0), 0.46, 0xf3eaff, 0.18, 0.14);
+      const shaft = new THREE.ArrowHelper(vector, new THREE.Vector3(0, 0, frontFace + 0.04), 0.46, 0xf3eaff, 0.18, 0.14);
       root.add(shaft);
     }
   }
-  const glow = new THREE.PointLight(color, 1.5, 7); root.add(glow);
   return root;
 }
 
@@ -189,18 +242,18 @@ export class FlightWorld {
       const signature = `${hoop.type}:${hoop.radius}:${hoop.arrow}`;
       let item = this.hoops.get(hoop.id);
       if (!item || item.signature !== signature) {
-        if (item) this.scene.remove(item.mesh);
-        item = { mesh: createHoop(hoop), signature };
+        if (item) { this.scene.remove(item.mesh); disposeObject(item.mesh); }
+        item = { mesh: createRock(hoop), signature };
         this.hoops.set(hoop.id, item); this.scene.add(item.mesh);
       }
       item.mesh.position.set(hoop.x * SCALE, (hoop.y - 45) * SCALE, -distance * SCALE);
       const pulse = 1 + Math.sin(timeSeconds * 3 + hoop.id) * 0.035;
       item.mesh.scale.setScalar(pulse);
     }
-    for (const [id, item] of this.hoops) if (!known.has(id)) { this.scene.remove(item.mesh); this.hoops.delete(id); }
+    for (const [id, item] of this.hoops) if (!known.has(id)) { this.scene.remove(item.mesh); disposeObject(item.mesh); this.hoops.delete(id); }
     this.renderer.render(this.scene, this.camera);
   }
   dispose(): void {
-    window.removeEventListener('resize', this.resize); this.renderer.dispose(); this.renderer.domElement.remove();
+    window.removeEventListener('resize', this.resize); disposeObject(this.scene); this.hoops.clear(); this.renderer.dispose(); this.renderer.domElement.remove();
   }
 }

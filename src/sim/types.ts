@@ -29,6 +29,9 @@ export interface Hoop {
   y: number;
   z: number;
   radius: number;
+  thickness: number;
+  outline: Vector2[];
+  decoy: boolean;
   arrow: PullDirection | null;
   cleared: boolean;
 }

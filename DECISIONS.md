@@ -26,3 +26,7 @@
 - The ship is built from Three.js primitives and a swept procedural wing, with an engine glow driven by speed; no external model or texture dependency is introduced.
 - Space has a 300 m × 200 m invisible soft-force envelope centered on the existing flight altitude; positions clamp safely at its edge instead of ending a run.
 - Target centers remain in the previous reachable 160 m × 80 m course envelope so waypoints stay fair at 320 km/h; this is not a visible wall or a ship crash boundary.
+- Existing `Hoop` identifiers and database columns remain unchanged; each in-memory/networked target now carries its own seeded 24-point outline, one circular hole, 4–10 m thickness, and a decoy flag, so no database migration is needed.
+- Hole radius shrinks from 9 m to 5.5 m; a conservative 3 m ship-collision envelope leaves at least the required 1.5 m physical clearance at the minimum.
+- Decoys sit beside the validated main route, rising from a 12% to 62% per-hole chance over ten minutes while scored-hole spacing contracts from 120–220 m to 120–170 m.
+- Magnetic-route reachability assumes the cooperative crew can counter-steer the full two-second pull; the magnet arrow continues to point toward the next generated hole.

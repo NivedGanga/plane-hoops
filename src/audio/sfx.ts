@@ -61,13 +61,6 @@ export class SoundEffects {
     }
   }
 
-  missedHoop(): void {
-    this.play([
-      { from: 280, to: 90, duration: 0.42, delay: 0, waveform: 'sawtooth', volume: 0.055 },
-      { from: 145, to: 52, duration: 0.48, delay: 0.08, waveform: 'triangle', volume: 0.05 },
-    ]);
-  }
-
   crash(): void {
     this.play([
       { from: 220, to: 70, duration: 0.38, delay: 0, waveform: 'sawtooth', volume: 0.055 },

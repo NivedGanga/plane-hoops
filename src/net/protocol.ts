@@ -23,7 +23,7 @@ export type GameEvent =
   | { type: 'hoop-cleared'; hoopId: number; hoopType: Hoop['type']; score: number; tick: number }
   | { type: 'booster-activated'; untilTick: number; score: number; tick: number }
   | { type: 'magnetic-activated'; direction: NonNullable<Hoop['arrow']>; untilTick: number; score: number; tick: number }
-  | { type: 'crash'; tick: number; score: number; reason: 'crash' | 'missed_hoop'; distance: number; hoopsCleared: number }
+  | { type: 'crash'; tick: number; score: number; reason: 'crash'; distance: number; hoopsCleared: number; rockId: number; impactPoint: { x: number; y: number; z: number }; shipPosition: { x: number; y: number; z: number } }
   | { type: 'round-end'; score: number; tick: number; reason: 'host_ended' | 'connection_lost'; distance: number; hoopsCleared: number }
   | { type: 'leaderboard-updated' }
   | { type: 'seat-joined'; seatId: number; name: string }

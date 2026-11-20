@@ -84,7 +84,8 @@ export class PlaneHoopsApp {
   private statusText = 'Signal ready';
   private roomName = '';
   private hostUid?: string;
-  private endReason: 'crash' | 'missed_hoop' | 'host_ended' | 'connection_lost' = 'crash';
+  private endReason: 'crash' | 'host_ended' | 'connection_lost' = 'crash';
+  private crashImpact?: { rockId: number; impactPoint: { x: number; y: number; z: number }; shipPosition: { x: number; y: number; z: number } };
   private roundFinished = false;
   private leaderboardRequestId = 0;
 
@@ -270,6 +271,7 @@ export class PlaneHoopsApp {
     this.state = startRound(createPlaneState());
     this.roundFinished = false;
     this.endReason = 'crash';
+    this.crashImpact = undefined; this.world.reset();
     this.bindings = initialBindings(this.room.playerCount);
     this.pendingShuffle = null;
     this.nextShuffleTick = Math.round(this.nextShuffleInterval() * SIMULATION_HZ);
@@ -344,7 +346,11 @@ export class PlaneHoopsApp {
     }
     const result = stepRound(this.state, combined, this.hoops);
     this.state = result.state;
-    if (result.missed.length > 0) this.endReason = 'missed_hoop';
+    if (result.collision) {
+      this.endReason = 'crash';
+      this.crashImpact = { rockId: result.collision.rockId, impactPoint: result.collision.impactPoint, shipPosition: { x: this.state.x, y: this.state.y, z: this.state.z } };
+      this.world.explode(result.collision.impactPoint, result.collision.rockId, this.state);
+    }
     for (const hoop of result.cleared) {
       this.hoopClears++;
       this.broadcastEvent({ type: 'hoop-cleared', hoopId: hoop.id, hoopType: hoop.type, score: this.state.score, tick: this.state.tick });
@@ -409,7 +415,7 @@ export class PlaneHoopsApp {
   private receiveGameEvent(event: GameEvent): void {
     if (this.room?.isHost) return;
     if (event.type === 'round-start') {
-      this.seed = event.seed; this.bindings = event.bindings; this.state = startRound(createPlaneState()); this.roundFinished = false; this.endReason = 'crash';
+      this.seed = event.seed; this.bindings = event.bindings; this.state = startRound(createPlaneState()); this.roundFinished = false; this.endReason = 'crash'; this.crashImpact = undefined; this.world.reset();
       this.pendingShuffle = null; this.hoops = []; this.hoopClears = 0; this.shuffleCount = 0; this.remoteInputSequences.clear(); this.remoteInputTimes.clear();
       this.root.querySelector('#lobby-wrap')?.classList.add('hidden'); this.root.querySelector('#result-overlay')?.classList.add('hidden');
       this.root.querySelector('#game-hud')?.classList.remove('hidden'); this.statusText = 'In flight';
@@ -421,11 +427,18 @@ export class PlaneHoopsApp {
       const ids = new Set(this.hoops.map((hoop) => hoop.id)); this.hoops.push(...event.hoops.filter((hoop) => !ids.has(hoop.id)));
     } else if (event.type === 'shuffle-command') {
       this.pendingShuffle = { bindings: event.bindings, effectiveTick: event.effectiveTick };
-    } else if (event.type === 'round-end' || event.type === 'crash') {
+    } else if (event.type === 'crash') {
+      if (this.roundFinished) return;
+      this.endReason = 'crash'; this.hoopClears = event.hoopsCleared;
+      this.state = { ...this.state, ...event.shipPosition, phase: 'ended', score: event.score, tick: event.tick };
+      this.crashImpact = { rockId: event.rockId, impactPoint: event.impactPoint, shipPosition: event.shipPosition };
+      this.world.explode(event.impactPoint, event.rockId, this.state);
+      this.finishRound(true);
+    } else if (event.type === 'round-end') {
       if (this.roundFinished) return;
       this.endReason = event.reason; this.hoopClears = event.hoopsCleared;
       this.state = { ...this.state, phase: 'ended', score: event.score, tick: event.tick, z: event.distance };
-      this.finishRound(event.type === 'crash');
+      this.finishRound(false);
     } else if (event.type === 'leaderboard-updated') {
       void this.renderLeaderboard();
     } else if (event.type === 'seat-joined') { this.names.set(event.seatId, event.name); this.updateSeatHud(); }
@@ -466,25 +479,23 @@ export class PlaneHoopsApp {
   private finishRound(crashed: boolean): void {
     if (this.roundFinished) return;
     this.roundFinished = true;
-    if (this.endReason === 'missed_hoop') this.sounds.missedHoop();
-    else if (crashed) this.sounds.crash();
+    if (crashed) this.sounds.crash();
     const score = this.state.score;
     if (this.room?.isHost) {
       const distance = Math.max(0, Math.round(this.state.z));
       const hoopsCleared = this.hoopClears;
-      if (crashed || this.endReason === 'crash' || this.endReason === 'missed_hoop') {
-        const reason = this.endReason === 'missed_hoop' ? 'missed_hoop' : 'crash';
-        this.broadcastEvent({ type: 'crash', reason, tick: this.state.tick, score, distance, hoopsCleared });
-      }
-      else this.broadcastEvent({ type: 'round-end', tick: this.state.tick, score, reason: this.endReason, distance, hoopsCleared });
+      if (crashed) {
+        const impact = this.crashImpact ?? { rockId: -1, impactPoint: { x: this.state.x, y: this.state.y, z: this.state.z }, shipPosition: { x: this.state.x, y: this.state.y, z: this.state.z } };
+        this.broadcastEvent({ type: 'crash', reason: 'crash', tick: this.state.tick, score, distance, hoopsCleared, ...impact });
+      } else this.broadcastEvent({ type: 'round-end', tick: this.state.tick, score, reason: this.endReason === 'connection_lost' ? 'connection_lost' : 'host_ended', distance, hoopsCleared });
       this.signaling?.send({ type: 'room-status', phase: 'ended' });
     }
     this.state = { ...this.state, phase: 'ended' };
     this.remoteInputSequences.clear(); this.remoteInputTimes.clear(); this.remoteMasks.clear();
     this.root.querySelector('#hud-score')!.textContent = String(score).padStart(3, '0');
     this.root.querySelector('#result-score')!.textContent = String(score);
-    this.root.querySelector('#result-title')!.textContent = this.endReason === 'connection_lost' ? 'Crew link lost.' : this.endReason === 'missed_hoop' ? 'Missed a hoop.' : crashed ? 'Flight over.' : 'Nice flying, crew.';
-    this.root.querySelector('#result-eyebrow')!.textContent = this.endReason === 'connection_lost' ? 'Connection lost · not submitted' : this.endReason === 'missed_hoop' ? 'Hoop missed · run over' : crashed ? 'Out of bounds' : 'Host ended the run';
+    this.root.querySelector('#result-title')!.textContent = this.endReason === 'connection_lost' ? 'Crew link lost.' : crashed ? 'Asteroid impact.' : 'Nice flying, crew.';
+    this.root.querySelector('#result-eyebrow')!.textContent = this.endReason === 'connection_lost' ? 'Connection lost · not submitted' : crashed ? 'SHIP DESTROYED · ROCK CONTACT' : 'Host ended the run';
     const distance = Math.max(0, Math.round(this.state.z));
     this.root.querySelector('#leaderboard')!.innerHTML = `<div class="leader-row"><span>Team score</span><strong>${score} pts</strong></div><div class="leader-row"><span>Hoops cleared</span><strong>${this.hoopClears}</strong></div><div class="leader-row"><span>Distance</span><strong>${distance.toLocaleString()} m</strong></div><div class="leader-row"><span>Team</span><strong>${escapeHtml(this.roomName)}</strong></div>`;
     if (this.room?.isHost && this.endReason !== 'connection_lost' && this.hostUid) {

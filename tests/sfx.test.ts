@@ -40,16 +40,16 @@ describe('game sound effects', () => {
     expect(context.oscillators).toHaveLength(2);
     expect(context.oscillators.every((oscillator) => oscillator.started)).toBe(true);
     expect(sounds.toggle()).toBe(false);
-    sounds.missedHoop();
+    sounds.crash();
     expect(context.oscillators).toHaveLength(2);
   });
 
-  it('emits a distinct two-note cue for missed hoops when enabled', async () => {
+  it('emits a distinct two-note cue on rock impact when enabled', async () => {
     const context = new FakeContext();
     const sounds = new SoundEffects(() => context as unknown as AudioContext);
     sounds.unlock();
     await Promise.resolve();
-    sounds.missedHoop();
+    sounds.crash();
     expect(context.oscillators).toHaveLength(2);
     expect(context.oscillators.map((oscillator) => oscillator.type)).toEqual(['sawtooth', 'triangle']);
   });

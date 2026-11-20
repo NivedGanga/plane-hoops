@@ -18,7 +18,7 @@
 - A maximum of ten future hoops is used for a compact reliable buffer; booster share is 18% and generated course geometry is seeded for repeatable play.
 - The default STUN server is `stun:stun.l.google.com:19302`; no static TURN secret is put in frontend variables.
 - Supabase's security advisor flags `get_room` as `SECURITY DEFINER` and warns that the intended RLS policies also apply to anonymous signed-in users (who use the `authenticated` role). Review these policies and add CAPTCHA/rate-limit abuse controls before treating the service as production-hardened.
-- Missing any hoop now ends the round immediately and is broadcast as an authoritative `missed_hoop` result. Sound effects are synthesized with Web Audio, can be muted in the HUD, and require no external audio assets.
+- The initial missed-hoop crash rule below was superseded by the 2026-11-20 follow-up: a miss only continues play unless the ship actually contacts rock; crash sound and UI copy now represent rock impact. Sound effects remain synthesized with Web Audio.
 - GitHub `main` had an unrelated Firebase lineage; it is retained as a secondary merge parent while the deployed Supabase tree remains primary, avoiding a force-push and preserving both histories.
 - The lane and its boundary/grid visuals are removed; an always-dark procedural starfield, faint generated nebula, fixed key light, and speed-scaled dust establish space without downloaded art.
 - The existing HUD keeps its IDs and metrics, while the control map occupies the middle grid column so score/time cards cannot cover it at the requested desktop widths.
@@ -30,3 +30,11 @@
 - Hole radius shrinks from 9 m to 5.5 m; a conservative 3 m ship-collision envelope leaves at least the required 1.5 m physical clearance at the minimum.
 - Decoys sit beside the validated main route, rising from a 12% to 62% per-hole chance over ten minutes while scored-hole spacing contracts from 120–220 m to 120–170 m.
 - Magnetic-route reachability assumes the cooperative crew can counter-steer the full two-second pull; the magnet arrow continues to point toward the next generated hole.
+- Seven local collision spheres cover the hull, nose/tail, and wings; sweeping their centers through polygonal slab cross-sections tests the visible rock body and through-hole rather than a proxy hoop.
+- A sweep samples at no more than 0.25 m and expands each sample by half a step so fast flight cannot tunnel through the minimum-thickness slab.
+- A scored hole is awarded only after the complete 3 m ship envelope clears the back of the slab, preventing a partially passed hull from scoring before a later impact.
+- The first host-authoritative rock impact event carries rock and ship coordinates so every peer sees the same deterministic hull breakup; a fresh starship is rebuilt on round restart.
+- The ship uses the same 0.12 world-units-per-metre scale as the rock apertures, so the visible 2.67 m wing half-span matches the conservative 3 m collision envelope.
+- Rock transforms stay static instead of pulsing or tumbling, because animated geometry would diverge from the host's authoritative collider.
+- Crash breakup detaches the existing ship mesh parts and adds 96 seeded spark particles for 1.35 s, keeping the effect synchronized and free of external art assets.
+- A desktop browser smoke test inspects the single ExtrudeGeometry bore and verifies the explosion hides the ship and restart rebuilds it.

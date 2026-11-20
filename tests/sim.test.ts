@@ -10,17 +10,28 @@ import {
 import {
   SeededRandom, activateHoopEffect, createPlaneState, generateHoopBatch, hoopReachable,
   initialBindings, inputForSeat, isOutsideBounds, keysForSeat, controlsForSeat, shuffledBindings,
-  startRound, stepRound, sweptHoopCrossing, tickPhysics, discardHoopsBehind,
+  startRound, stepRound, sweptHoopCrossing, sweptRockCollision, tickPhysics, discardHoopsBehind,
 } from '../src/sim';
 import type { Hoop, PilotInput } from '../src/sim';
 
 const neutral: PilotInput = { up: false, down: false, left: false, right: false };
 function testHoop(overrides: Partial<Hoop> = {}): Hoop {
+  const radius = overrides.radius ?? 2;
   const outline = Array.from({ length: 24 }, (_, index) => {
     const angle = index * Math.PI * 2 / 24;
-    return { x: Math.cos(angle) * 10, y: Math.sin(angle) * 10 };
+    return { x: Math.cos(angle) * (radius + 10), y: Math.sin(angle) * (radius + 10) };
   });
-  return { id: 1, type: 'standard', x: 0, y: 45, z: 4, radius: 2, thickness: 4, outline, decoy: false, arrow: null, cleared: false, ...overrides };
+  return { id: 1, type: 'standard', x: 0, y: 45, z: 4, radius, thickness: 4, outline, decoy: false, arrow: null, cleared: false, ...overrides };
+}
+
+function activeCourseWindow(rocks: Hoop[], state: ReturnType<typeof startRound>, cursor: { index: number }): Hoop[] {
+  let start = cursor.index;
+  while (start < rocks.length && rocks[start]!.z + rocks[start]!.thickness / 2 + MAX_SHIP_COLLISION_RADIUS_M < state.z - HOOP_CLEANUP_BEHIND_M) start++;
+  let end = start;
+  const ahead = 1500 + ROCK_THICKNESS_MAX_M / 2 + MAX_SHIP_COLLISION_RADIUS_M;
+  while (end < rocks.length && rocks[end]!.z - state.z <= ahead) end++;
+  cursor.index = start;
+  return rocks.slice(start, end);
 }
 
 describe('flight simulation', () => {
@@ -112,22 +123,43 @@ describe('flight simulation', () => {
     expect(sweptHoopCrossing(0, 8, { x: 0, y: 45, z: 0 }, { x: 12, y: 45, z: 8 }, hoop)).toBe(false);
   });
 
-  it('ends the round on the first missed hoop but keeps a successful hoop clear in play', () => {
-    const state = startRound();
-    const missedHoop = testHoop({ id: 1, x: 12, z: 0.5 });
-    const missed = stepRound(state, neutral, [missedHoop]);
-    expect(missed.missed).toEqual([missedHoop]);
-    expect(missed.state.phase).toBe('ended');
-    expect(missed.state.score).toBe(0);
-    expect(missedHoop.cleared).toBe(true);
-    expect(stepRound(missed.state, neutral, []).state).toBe(missed.state);
+  it('crashes only on rock contact, scores after a safe hole exit, and ignores a fully missed rock', () => {
+    const rock = testHoop({ id: 1, z: 0.5, radius: 5.5 });
+    let safeState = startRound(); let clearEvents = 0;
+    for (let tick = 0; tick < 20 && !rock.cleared; tick++) {
+      const result = stepRound(safeState, neutral, [rock]);
+      expect(result.state.phase).toBe('playing');
+      expect(result.collision).toBeNull();
+      clearEvents += result.cleared.length; safeState = result.state;
+    }
+    expect(clearEvents).toBe(1);
+    expect(safeState.score).toBe(10);
 
-    const clearedHoop = testHoop({ id: 2, z: 0.5 });
-    const cleared = stepRound(state, neutral, [clearedHoop]);
-    expect(cleared.cleared).toEqual([clearedHoop]);
-    expect(cleared.missed).toEqual([]);
-    expect(cleared.state.phase).toBe('playing');
-    expect(cleared.state.score).toBe(10);
+    const contactRock = testHoop({ id: 2, z: 0.5, radius: 5.5 });
+    const contact = stepRound({ ...startRound(), x: 5.7 }, neutral, [contactRock]);
+    expect(contact.collision?.rockId).toBe(contactRock.id);
+    expect(contact.state.phase).toBe('ended');
+    expect(contact.state.score).toBe(0);
+    expect(contact.missed).toEqual([]);
+
+    const farAwayRock = testHoop({ id: 3, z: 0.5, radius: 5.5 });
+    const miss = stepRound({ ...startRound(), x: 40 }, neutral, [farAwayRock]);
+    expect(miss.collision).toBeNull();
+    expect(miss.state.phase).toBe('playing');
+    expect(miss.state.score).toBe(0);
+    expect(miss.missed).toEqual([]);
+  });
+
+  it('sweeps the compound hull continuously through thick slabs and picks the earliest stable rock id', () => {
+    const from = { ...startRound(), z: -6, x: 5.7 };
+    const to = { ...from, z: 6 };
+    const safeFrom = { ...from, x: 0 };
+    const safeTo = { ...to, x: 0 };
+    const rock = testHoop({ id: 9, z: 0, radius: 5.5, thickness: 4 });
+    expect(sweptRockCollision(from, to, [rock])?.time).toBeDefined();
+    expect(sweptRockCollision(safeFrom, safeTo, [rock])).toBeNull();
+    expect(sweptRockCollision(from, to, [rock, { ...rock, id: 2 }])?.rockId).toBe(2);
+    expect(sweptRockCollision(from, to, [testHoop({ id: 10, z: 2000, radius: 5.5 })])).toBeNull();
   });
 
   it('applies cooperative team scoring and booster/magnetic effects without changing forward speed', () => {
@@ -242,9 +274,10 @@ describe('flight simulation', () => {
       courseSpeed = Math.min(FORWARD_SPEED_CAP_KMH, START_FORWARD_SPEED_KMH + (FORWARD_SPEED_CAP_KMH - START_FORWARD_SPEED_KMH) * Math.min(1, courseElapsed / SPEED_RAMP_SECONDS));
       placement = batch.placement;
     }
-    // The optimal pilot brakes toward each center while following the speed-ramped route.
-    const scoringCourse = course.filter((hoop) => !hoop.decoy).slice(0, 1000);
-    let optimal = startRound(); let optimalHoops = scoringCourse.map((hoop) => ({ ...hoop, cleared: false }));
+    // The optimal pilot brakes toward each center while following the speed-ramped route through main and decoy rocks.
+    const optimalRocks = course.map((hoop) => ({ ...hoop, cleared: false }));
+    let optimal = startRound(); let optimalHoops = optimalRocks.filter((hoop) => !hoop.decoy);
+    const optimalWindow = { index: 0 };
     let targetIndex = 0; const optimalCleared = new Set<number>();
     while (targetIndex < optimalHoops.length && optimal.phase === 'playing') {
       const target = optimalHoops[targetIndex];
@@ -275,17 +308,18 @@ describe('flight simulation', () => {
       const input: PilotInput = {
         right: xInput > 0, left: xInput < 0, up: yInput > 0, down: yInput < 0,
       };
-      const result = stepRound(optimal, input, optimalHoops);
+      const result = stepRound(optimal, input, activeCourseWindow(optimalRocks, optimal, optimalWindow));
       for (const hoop of result.cleared) optimalCleared.add(hoop.id);
       optimal = result.state;
       while (targetIndex < optimalHoops.length && optimalHoops[targetIndex].cleared) targetIndex++;
       if (optimal.tick > 200_000) break;
     }
     const optimalRate = optimalCleared.size / 1000;
-    let randomPilot = startRound(); const randomHoops = scoringCourse.map((hoop) => ({ ...hoop, cleared: false })); const random = new SeededRandom(1941);
+    const randomRocks = course.map((hoop) => ({ ...hoop, cleared: false }));
+    let randomPilot = startRound(); const randomWindow = { index: 0 }; const random = new SeededRandom(1941);
     const randomCleared = new Set<number>();
     for (let tick = 0; tick < 28_000 && randomPilot.phase === 'playing'; tick++) {
-      const result = stepRound(randomPilot, { up: random.next() < 0.5, down: random.next() < 0.5, left: random.next() < 0.5, right: random.next() < 0.5 }, randomHoops);
+      const result = stepRound(randomPilot, { up: random.next() < 0.5, down: random.next() < 0.5, left: random.next() < 0.5, right: random.next() < 0.5 }, activeCourseWindow(randomRocks, randomPilot, randomWindow));
       for (const hoop of result.cleared) randomCleared.add(hoop.id);
       randomPilot = result.state;
     }

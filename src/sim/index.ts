@@ -4,3 +4,4 @@ export * from './bindings';
 export * from './physics';
 export * from './hoops';
 export * from './engine';
+export * from './collision';

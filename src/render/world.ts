@@ -6,6 +6,7 @@ const colors = { standard: 0xcbd4df, booster: 0x60e6fb, magnetic: 0xc39cff } as 
 
 type StarLayer = { points: THREE.Points; parallax: number; drift: number };
 type DustSeed = { x: number; y: number; phase: number };
+type DebrisPiece = { object: THREE.Object3D; velocity: THREE.Vector3; spin: THREE.Vector3 };
 
 function seeded(seed: number): () => number {
   let state = seed >>> 0;
@@ -25,6 +26,24 @@ function disposeObject(root: THREE.Object3D): void {
     const material = drawable.material;
     if (Array.isArray(material)) material.forEach((item) => item.dispose());
     else material?.dispose();
+  });
+}
+
+function cloneMaterials(root: THREE.Object3D): void {
+  root.traverse((object) => {
+    const drawable = object as THREE.Mesh;
+    if (!drawable.material) return;
+    drawable.material = Array.isArray(drawable.material) ? drawable.material.map((item) => item.clone()) : drawable.material.clone();
+    const materials = Array.isArray(drawable.material) ? drawable.material : [drawable.material];
+    for (const material of materials) { material.transparent = true; material.depthWrite = false; material.needsUpdate = true; }
+  });
+}
+
+function setOpacity(root: THREE.Object3D, opacity: number): void {
+  root.traverse((object) => {
+    const drawable = object as THREE.Mesh;
+    const materials = Array.isArray(drawable.material) ? drawable.material : drawable.material ? [drawable.material] : [];
+    for (const material of materials) material.opacity = opacity;
   });
 }
 
@@ -92,6 +111,7 @@ function createStarship(): THREE.Group {
   const canopy = new THREE.Mesh(new THREE.SphereGeometry(0.2, 16, 12), new THREE.MeshPhysicalMaterial({ color: 0x84d8ff, metalness: 0.68, roughness: 0.13, clearcoat: 1, emissive: 0x16395a, emissiveIntensity: 0.55 }));
   canopy.scale.set(0.78, 0.55, 1.55); canopy.position.set(0, 0.19, -0.26); root.add(canopy);
   const lamp = new THREE.PointLight(0x63e8ff, 2.0, 5); lamp.position.set(0, 0.08, -0.9); root.add(lamp);
+  root.scale.setScalar(SCALE);
   return root;
 }
 
@@ -176,6 +196,14 @@ export class FlightWorld {
   private camera: THREE.PerspectiveCamera;
   private renderer: THREE.WebGLRenderer;
   private ship = createStarship();
+  private explosionPieces: DebrisPiece[] = [];
+  private explosionParticles?: THREE.Points;
+  private explosionGeometry?: THREE.BufferGeometry;
+  private particlePositions: THREE.Vector3[] = [];
+  private particleVelocities: THREE.Vector3[] = [];
+  private explosionStarted = false;
+  private explosionElapsed = 0;
+  private lastRenderSeconds?: number;
   private hoops = new Map<number, { mesh: THREE.Group; signature: string }>();
   private starLayers: StarLayer[] = [];
   private dust: THREE.Points;
@@ -209,16 +237,90 @@ export class FlightWorld {
     const width = this.host.clientWidth || window.innerWidth; const height = this.host.clientHeight || window.innerHeight;
     this.camera.aspect = width / height; this.camera.updateProjectionMatrix(); this.renderer.setSize(width, height);
   };
-  render(state: PlaneState, activeHoops: Hoop[], timeSeconds: number): void {
+  private clearExplosion(): void {
+    for (const piece of this.explosionPieces) { this.scene.remove(piece.object); disposeObject(piece.object); }
+    this.explosionPieces = [];
+    if (this.explosionParticles) { this.scene.remove(this.explosionParticles); disposeObject(this.explosionParticles); }
+    this.explosionParticles = undefined; this.explosionGeometry = undefined;
+    this.particlePositions = []; this.particleVelocities = [];
+  }
+  reset(): void {
+    this.clearExplosion(); this.scene.remove(this.ship); disposeObject(this.ship);
+    this.ship = createStarship(); this.scene.add(this.ship);
+    this.explosionStarted = false; this.explosionElapsed = 0; this.lastRenderSeconds = undefined;
+  }
+  explode(impactPoint: { x: number; y: number; z: number }, rockId: number, state: PlaneState): void {
+    if (this.explosionStarted) return;
+    this.explosionStarted = true; this.explosionElapsed = 0;
     this.ship.position.set(state.x * SCALE, (state.y - 45) * SCALE, 0);
-    this.ship.rotation.y = -Math.atan(state.headingX);
-    this.ship.rotation.x = Math.atan(state.headingY);
+    this.ship.rotation.y = -Math.atan(state.headingX); this.ship.rotation.x = Math.atan(state.headingY);
     this.ship.rotation.z = -Math.max(-0.28, Math.min(0.28, state.headingX * 1.7));
-    const thruster = this.ship.userData.thrusterGlow as THREE.Mesh;
-    const thrusterMaterial = thruster.material as THREE.MeshBasicMaterial;
-    const speedFactor = Math.max(0, Math.min(1, (state.speedKmh - 200) / 120));
-    thrusterMaterial.opacity = 0.48 + speedFactor * 0.42;
-    thruster.scale.set(1, 1, 0.7 + speedFactor * 0.8);
+    const origin = new THREE.Vector3(impactPoint.x * SCALE, (impactPoint.y - 45) * SCALE, -(impactPoint.z - state.z) * SCALE);
+    const random = seeded((rockId * 0x9e3779b1 + state.tick * 0x85ebca6b) >>> 0);
+    for (const [index, part] of [...this.ship.children].entries()) {
+      this.scene.attach(part); cloneMaterials(part);
+      const direction = part.position.clone().sub(origin);
+      if (direction.lengthSq() < 0.0001) direction.set(random() - 0.5, random() - 0.25, random() - 0.5);
+      direction.normalize().multiplyScalar(0.55 + random() * 1.05);
+      direction.x += (random() - 0.5) * 0.32; direction.y += 0.12 + random() * 0.55; direction.z += (random() - 0.5) * 0.28;
+      this.explosionPieces.push({ object: part, velocity: direction, spin: new THREE.Vector3(random() - 0.5, random() - 0.5, random() - 0.5).multiplyScalar(4 + index % 3) });
+    }
+    this.ship.visible = false;
+    const flash = new THREE.PointLight(0x8feeff, 6, 8); flash.position.copy(origin); this.scene.add(flash);
+    this.explosionPieces.push({ object: flash, velocity: new THREE.Vector3(), spin: new THREE.Vector3() });
+
+    const count = 96; const values = new Float32Array(count * 3);
+    this.particlePositions = []; this.particleVelocities = [];
+    for (let index = 0; index < count; index++) {
+      const direction = new THREE.Vector3(random() * 2 - 1, random() * 2 - 1, random() * 2 - 1).normalize();
+      const start = origin.clone().addScaledVector(direction, 0.025);
+      values[index * 3] = start.x; values[index * 3 + 1] = start.y; values[index * 3 + 2] = start.z;
+      this.particlePositions.push(start);
+      this.particleVelocities.push(direction.multiplyScalar(0.55 + random() * 2.1));
+    }
+    this.explosionGeometry = new THREE.BufferGeometry();
+    this.explosionGeometry.setAttribute('position', new THREE.BufferAttribute(values, 3));
+    this.explosionParticles = new THREE.Points(this.explosionGeometry, new THREE.PointsMaterial({ color: 0xffbd86, size: 0.075, sizeAttenuation: true, transparent: true, opacity: 1, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false }));
+    this.scene.add(this.explosionParticles);
+  }
+  private updateExplosion(timeSeconds: number): void {
+    const dt = Math.max(0, Math.min(0.05, timeSeconds - (this.lastRenderSeconds ?? timeSeconds)));
+    this.lastRenderSeconds = timeSeconds;
+    if (!this.explosionStarted) return;
+    this.explosionElapsed += dt;
+    const fade = Math.max(0, 1 - this.explosionElapsed / 1.35);
+    for (const piece of this.explosionPieces) {
+      piece.velocity.y -= 0.18 * dt;
+      piece.object.position.addScaledVector(piece.velocity, dt);
+      piece.object.rotation.x += piece.spin.x * dt; piece.object.rotation.y += piece.spin.y * dt; piece.object.rotation.z += piece.spin.z * dt;
+      setOpacity(piece.object, fade);
+      if (piece.object instanceof THREE.PointLight) piece.object.intensity = 6 * Math.max(0, 1 - this.explosionElapsed / 0.28);
+    }
+    const attribute = this.explosionGeometry?.getAttribute('position') as THREE.BufferAttribute | undefined;
+    if (attribute) {
+      for (let index = 0; index < this.particlePositions.length; index++) {
+        const velocity = this.particleVelocities[index]!; velocity.y -= 0.22 * dt; velocity.multiplyScalar(Math.exp(-0.12 * dt));
+        const position = this.particlePositions[index]!.addScaledVector(velocity, dt);
+        attribute.setXYZ(index, position.x, position.y, position.z);
+      }
+      attribute.needsUpdate = true;
+      const material = this.explosionParticles?.material as THREE.PointsMaterial | undefined;
+      if (material) material.opacity = fade;
+    }
+    if (this.explosionElapsed >= 1.35) this.clearExplosion();
+  }
+  render(state: PlaneState, activeHoops: Hoop[], timeSeconds: number): void {
+    if (!this.explosionStarted) {
+      this.ship.position.set(state.x * SCALE, (state.y - 45) * SCALE, 0);
+      this.ship.rotation.y = -Math.atan(state.headingX);
+      this.ship.rotation.x = Math.atan(state.headingY);
+      this.ship.rotation.z = -Math.max(-0.28, Math.min(0.28, state.headingX * 1.7));
+      const thruster = this.ship.userData.thrusterGlow as THREE.Mesh;
+      const thrusterMaterial = thruster.material as THREE.MeshBasicMaterial;
+      const speedFactor = Math.max(0, Math.min(1, (state.speedKmh - 200) / 120));
+      thrusterMaterial.opacity = 0.48 + speedFactor * 0.42;
+      thruster.scale.set(1, 1, 0.7 + speedFactor * 0.8);
+    }
     this.camera.position.set(state.x * SCALE, (state.y - 45) * SCALE + 2.0, 8.5);
     this.camera.lookAt(state.x * SCALE, (state.y - 45) * SCALE, -9);
     for (const layer of this.starLayers) {
@@ -239,7 +341,7 @@ export class FlightWorld {
       const distance = hoop.z - state.z;
       if (distance < -2 || distance > 1050) continue;
       known.add(hoop.id);
-      const signature = `${hoop.type}:${hoop.radius}:${hoop.arrow}`;
+      const signature = `${hoop.type}:${hoop.radius}:${hoop.arrow}:${hoop.thickness}:${hoop.decoy}`;
       let item = this.hoops.get(hoop.id);
       if (!item || item.signature !== signature) {
         if (item) { this.scene.remove(item.mesh); disposeObject(item.mesh); }
@@ -247,10 +349,10 @@ export class FlightWorld {
         this.hoops.set(hoop.id, item); this.scene.add(item.mesh);
       }
       item.mesh.position.set(hoop.x * SCALE, (hoop.y - 45) * SCALE, -distance * SCALE);
-      const pulse = 1 + Math.sin(timeSeconds * 3 + hoop.id) * 0.035;
-      item.mesh.scale.setScalar(pulse);
+      item.mesh.scale.setScalar(1);
     }
     for (const [id, item] of this.hoops) if (!known.has(id)) { this.scene.remove(item.mesh); disposeObject(item.mesh); this.hoops.delete(id); }
+    this.updateExplosion(timeSeconds);
     this.renderer.render(this.scene, this.camera);
   }
   dispose(): void {

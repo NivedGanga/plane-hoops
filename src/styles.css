@@ -50,6 +50,7 @@ h2{font-size:20px;margin:0 0 8px}
 .room-code-box{padding:15px 17px;border:1px solid rgba(112,232,208,.25);border-radius:14px;background:#081321}
 .small-note{font-size:11px;color:#8ca3bf;margin-top:7px}
 .game-hud{position:absolute;inset:0;z-index:2;pointer-events:none}
+.shell.game-active .brand{display:none}
 .hud-top{position:absolute;left:clamp(20px,2.5vw,40px);right:clamp(20px,2.5vw,40px);top:22px;display:grid;grid-template-columns:minmax(0,1fr) minmax(270px,390px) minmax(0,1fr);gap:clamp(10px,1.5vw,20px);align-items:start}
 .stats{display:flex;gap:8px;min-width:0;justify-self:start}
 .stat{min-width:100px;padding:10px 14px;border:1px solid var(--line);border-radius:13px;background:rgba(5,11,20,.78);backdrop-filter:blur(15px)}

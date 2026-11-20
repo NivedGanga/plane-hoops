@@ -1,5 +1,6 @@
 import { CLIENT_INTERPOLATION_MS, HOST_HOOPS_AHEAD, HOOP_CLEANUP_BEHIND_M, ICE_RESTART_GRACE_SECONDS, INPUT_RATE_LIMIT_PER_SECOND, SHUFFLE_INTERVAL_END_MAX_SECONDS, SHUFFLE_INTERVAL_END_MIN_SECONDS, SHUFFLE_INTERVAL_MAX_SECONDS, SHUFFLE_INTERVAL_MIN_SECONDS, SIM_DT_SECONDS, SIMULATION_HZ, SHUFFLE_MIN_GAP_SECONDS, SHUFFLE_WARNING_SECONDS, SNAPSHOTS_PER_SECOND } from '../config/tuning';
-import { SeededRandom, createPlaneState, generateHoopBatch, initialBindings, inputForSeat, keysForSeat, shuffledBindings, sameBindings, startRound, stepRound, type BindingSet, type Direction, type Hoop, discardHoopsBehind, type PlaneState, type RoundSnapshot } from './sim';
+import { SeededRandom, createPlaneState, generateHoopBatch, initialBindings, inputForSeat, keysForSeat, controlsForSeat, shuffledBindings, sameBindings, startRound, stepRound, type BindingSet, type Direction, type Hoop, discardHoopsBehind, type PlaneState, type RoundSnapshot } from './sim';
+import { SoundEffects } from './audio/sfx';
 import { KeyboardState } from './input/keyboard';
 import { PeerMesh } from './net/peer';
 import { SupabaseSignalingClient } from './net/supabase-signaling';
@@ -51,6 +52,7 @@ function interpolateSnapshots(a: RoundSnapshot, b: RoundSnapshot, tick: number):
 export class PlaneHoopsApp {
   private world: FlightWorld;
   private keyboard = new KeyboardState();
+  private sounds = new SoundEffects();
   private signaling?: SignalingTransport;
   private peerMesh?: PeerMesh;
   private room?: RoomInfo;
@@ -82,7 +84,7 @@ export class PlaneHoopsApp {
   private statusText = 'Signal ready';
   private roomName = '';
   private hostUid?: string;
-  private endReason: 'crash' | 'host_ended' | 'connection_lost' = 'crash';
+  private endReason: 'crash' | 'missed_hoop' | 'host_ended' | 'connection_lost' = 'crash';
   private roundFinished = false;
   private leaderboardRequestId = 0;
 
@@ -123,6 +125,13 @@ export class PlaneHoopsApp {
     this.root.querySelector<HTMLSelectElement>('#local-seats')?.addEventListener('change', () => this.renderLocalSeatInputs());
     this.root.querySelector<HTMLButtonElement>('#create-room')?.addEventListener('click', () => this.createRoom());
     this.root.querySelector<HTMLButtonElement>('#join-room')?.addEventListener('click', () => this.joinRoom());
+    this.root.querySelector<HTMLButtonElement>('#sound-toggle')?.addEventListener('click', (event) => {
+      const button = event.currentTarget as HTMLButtonElement;
+      const enabled = this.sounds.toggle();
+      button.textContent = enabled ? 'SOUND ON' : 'SOUND OFF';
+      button.setAttribute('aria-pressed', String(enabled));
+      button.setAttribute('aria-label', enabled ? 'Mute sound' : 'Enable sound');
+    });
     this.root.querySelector<HTMLInputElement>('#room-code-input')?.addEventListener('input', (event) => {
       const input = event.currentTarget as HTMLInputElement; input.value = input.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6);
     });
@@ -139,6 +148,7 @@ export class PlaneHoopsApp {
   }
 
   private async createRoom(): Promise<void> {
+    this.sounds.unlock();
     this.clearError();
     const roomName = this.root.querySelector<HTMLInputElement>('#room-name-input')?.value.trim() ?? '';
     const hostName = this.root.querySelector<HTMLInputElement>('#host-name-input')?.value.trim() ?? '';
@@ -156,6 +166,7 @@ export class PlaneHoopsApp {
   }
 
   private joinRoom(): void {
+    this.sounds.unlock();
     this.clearError();
     const displayName = this.root.querySelector<HTMLInputElement>('#join-name-input')?.value.trim() ?? '';
     if (displayName.length < 1 || displayName.length > 16) { this.showError('Display name must be 1–16 characters.'); return; }
@@ -276,6 +287,7 @@ export class PlaneHoopsApp {
     this.hoops.push(...firstBatch.hoops); this.placement = firstBatch.placement;
     this.broadcastEvent({ type: 'round-start', seed: this.seed, bindings: this.bindings, tick: 0 });
     this.broadcastEvent({ type: 'hoop-batch', hoops: firstBatch.hoops });
+    this.sounds.roundStart();
     this.statusText = 'In flight'; this.lastFrame = performance.now();
   }
 
@@ -332,14 +344,16 @@ export class PlaneHoopsApp {
     }
     const result = stepRound(this.state, combined, this.hoops);
     this.state = result.state;
+    if (result.missed.length > 0) this.endReason = 'missed_hoop';
     for (const hoop of result.cleared) {
       this.hoopClears++;
       this.broadcastEvent({ type: 'hoop-cleared', hoopId: hoop.id, hoopType: hoop.type, score: this.state.score, tick: this.state.tick });
+      this.sounds.hoopCleared(hoop.type);
       if (hoop.type === 'booster') this.broadcastEvent({ type: 'booster-activated', untilTick: this.state.boosterUntilTick, score: this.state.score, tick: this.state.tick });
       if (hoop.type === 'magnetic' && hoop.arrow) this.broadcastEvent({ type: 'magnetic-activated', direction: hoop.arrow, untilTick: this.state.pullUntilTick, score: this.state.score, tick: this.state.tick });
     }
     this.hoops = discardHoopsBehind(this.hoops.filter((hoop) => !hoop.cleared), this.state.z);
-    if (this.hoops.length < HOST_HOOPS_AHEAD) {
+    if (this.state.phase !== 'ended' && this.hoops.length < HOST_HOOPS_AHEAD) {
       const batch = generateHoopBatch(this.random, this.placement, this.state.elapsedSeconds, this.state.speedKmh, HOST_HOOPS_AHEAD - this.hoops.length);
       this.hoops.push(...batch.hoops); this.placement = batch.placement;
       this.broadcastEvent({ type: 'hoop-batch', hoops: batch.hoops });
@@ -395,12 +409,14 @@ export class PlaneHoopsApp {
   private receiveGameEvent(event: GameEvent): void {
     if (this.room?.isHost) return;
     if (event.type === 'round-start') {
-      this.seed = event.seed; this.bindings = event.bindings; this.state = startRound(createPlaneState()); this.roundFinished = false;
+      this.seed = event.seed; this.bindings = event.bindings; this.state = startRound(createPlaneState()); this.roundFinished = false; this.endReason = 'crash';
       this.pendingShuffle = null; this.hoops = []; this.hoopClears = 0; this.shuffleCount = 0; this.remoteInputSequences.clear(); this.remoteInputTimes.clear();
       this.root.querySelector('#lobby-wrap')?.classList.add('hidden'); this.root.querySelector('#result-overlay')?.classList.add('hidden');
       this.root.querySelector('#game-hud')?.classList.remove('hidden'); this.statusText = 'In flight';
+      this.sounds.roundStart(); this.updateSeatHud();
     } else if (event.type === 'hoop-cleared') {
       this.hoopClears++;
+      this.sounds.hoopCleared(event.hoopType);
     } else if (event.type === 'hoop-batch') {
       const ids = new Set(this.hoops.map((hoop) => hoop.id)); this.hoops.push(...event.hoops.filter((hoop) => !ids.has(hoop.id)));
     } else if (event.type === 'shuffle-command') {
@@ -450,11 +466,16 @@ export class PlaneHoopsApp {
   private finishRound(crashed: boolean): void {
     if (this.roundFinished) return;
     this.roundFinished = true;
+    if (this.endReason === 'missed_hoop') this.sounds.missedHoop();
+    else if (crashed) this.sounds.crash();
     const score = this.state.score;
     if (this.room?.isHost) {
       const distance = Math.max(0, Math.round(this.state.z));
       const hoopsCleared = this.hoopClears;
-      if (crashed || this.endReason === 'crash') this.broadcastEvent({ type: 'crash', reason: 'crash', tick: this.state.tick, score, distance, hoopsCleared });
+      if (crashed || this.endReason === 'crash' || this.endReason === 'missed_hoop') {
+        const reason = this.endReason === 'missed_hoop' ? 'missed_hoop' : 'crash';
+        this.broadcastEvent({ type: 'crash', reason, tick: this.state.tick, score, distance, hoopsCleared });
+      }
       else this.broadcastEvent({ type: 'round-end', tick: this.state.tick, score, reason: this.endReason, distance, hoopsCleared });
       this.signaling?.send({ type: 'room-status', phase: 'ended' });
     }
@@ -462,9 +483,8 @@ export class PlaneHoopsApp {
     this.remoteInputSequences.clear(); this.remoteInputTimes.clear(); this.remoteMasks.clear();
     this.root.querySelector('#hud-score')!.textContent = String(score).padStart(3, '0');
     this.root.querySelector('#result-score')!.textContent = String(score);
-    this.root.querySelector('#result-title')!.textContent = this.endReason === 'connection_lost' ? 'Crew link lost.' : crashed ? 'Flight over.' : 'Nice flying, crew.';
-    this.root.querySelector('#result-eyebrow')!.textContent = this.endReason === 'connection_lost' ? 'Connection lost · not submitted' : crashed ? 'Out of bounds' : 'Host ended the run';
-    if (crashed) this.endReason = 'crash';
+    this.root.querySelector('#result-title')!.textContent = this.endReason === 'connection_lost' ? 'Crew link lost.' : this.endReason === 'missed_hoop' ? 'Missed a hoop.' : crashed ? 'Flight over.' : 'Nice flying, crew.';
+    this.root.querySelector('#result-eyebrow')!.textContent = this.endReason === 'connection_lost' ? 'Connection lost · not submitted' : this.endReason === 'missed_hoop' ? 'Hoop missed · run over' : crashed ? 'Out of bounds' : 'Host ended the run';
     const distance = Math.max(0, Math.round(this.state.z));
     this.root.querySelector('#leaderboard')!.innerHTML = `<div class="leader-row"><span>Team score</span><strong>${score} pts</strong></div><div class="leader-row"><span>Hoops cleared</span><strong>${this.hoopClears}</strong></div><div class="leader-row"><span>Distance</span><strong>${distance.toLocaleString()} m</strong></div><div class="leader-row"><span>Team</span><strong>${escapeHtml(this.roomName)}</strong></div>`;
     if (this.room?.isHost && this.endReason !== 'connection_lost' && this.hostUid) {
@@ -528,6 +548,12 @@ export class PlaneHoopsApp {
       const codes = keys.map((key) => `<span class="key ${(localDown & ({ KeyW: 1, KeyA: 2, KeyS: 4, KeyD: 8 }[key])) ? 'down' : ''}">${keyLabel[key]}</span>`).join('');
       return `<div class="seat-chip active"><div class="seat-chip-title">P${seat} · ${escapeHtml(this.names.get(seat) ?? (this.room!.isHost ? 'Local keyboard' : 'You'))}</div><div class="seat-chip-keys">${codes || '—'}</div></div>`;
     }).join('');
+    const map = this.root.querySelector<HTMLElement>('#control-map');
+    if (map) map.innerHTML = `<div class="control-map-title">CURRENT CONTROLS</div><div class="control-map-seats">${hostLocalSeats.map((seat) => {
+      const entries = controlsForSeat(this.bindings, seat).map(({ direction, key }) => `<span class="control-item"><kbd>${keyLabel[key]}</kbd><span>${prettyDirection[direction]} ${direction.toUpperCase()}</span></span>`).join('');
+      const name = escapeHtml(this.names.get(seat) ?? (this.room!.isHost ? `Pilot ${seat}` : 'You'));
+      return `<div class="control-map-seat"><span class="control-seat-name">P${seat} · ${name}</span><span class="control-list">${entries || '—'}</span></div>`;
+    }).join('')}</div>`;
   }
 
   private updateLobbyHud(): void { this.updateSeatHud(); }

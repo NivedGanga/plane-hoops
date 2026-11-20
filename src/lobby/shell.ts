@@ -34,8 +34,9 @@ export function mountShell(root: HTMLElement): void {
       <section class="game-hud hidden" id="game-hud">
         <div class="hud-top">
           <div class="stats"><div class="stat"><div class="stat-label">Team score</div><div class="stat-value mint" id="hud-score">000</div></div><div class="stat"><div class="stat-label">Flight time</div><div class="stat-value" id="hud-time">00:00</div></div><div class="stat"><div class="stat-label">Hoops cleared</div><div class="stat-value" id="hud-hoops">0</div></div></div>
-          <div class="room-pill" id="hud-room">ROOM ———</div>
+          <div class="hud-tools"><div class="room-pill" id="hud-room">ROOM ———</div><button class="sound-toggle" id="sound-toggle" type="button" aria-label="Mute sound" aria-pressed="true">SOUND ON</button></div>
         </div>
+        <div class="control-map" id="control-map" aria-label="Current controls"></div>
         <div class="seat-hud" id="seat-hud"></div>
         <div class="hud-right"><div class="speedometer"><div class="speed-number" id="hud-speed">210</div><div class="speed-unit">KM / H</div></div><div class="effect-tag hidden" id="hud-effect"></div></div>
         <div class="shuffle-alert hidden" id="shuffle-alert"></div>

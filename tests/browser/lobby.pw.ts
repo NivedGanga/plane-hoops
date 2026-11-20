@@ -15,6 +15,18 @@ test('lobby validates names and renders only 2 or 4 seats', async ({ page }) => 
   await expect(page.locator('#local-seats option')).toHaveCount(2);
 });
 
+test('W/A/S/D remain typeable in home-screen form fields', async ({ page }) => {
+  await page.goto('/');
+  const roomName = page.locator('#room-name-input');
+  await roomName.focus();
+  await roomName.pressSequentially('WASD');
+  await expect(roomName).toHaveValue('WASD');
+  const hostName = page.locator('#host-name-input');
+  await hostName.focus();
+  await hostName.pressSequentially('WASD');
+  await expect(hostName).toHaveValue('WASD');
+});
+
 test('a new visit prefills values saved in the same browser', async ({ browser }) => {
   const context = await browser.newContext();
   await context.addInitScript(() => {

@@ -23,6 +23,11 @@ export function keysForSeat(bindings: BindingSet, seat: number): KeyCode[] {
     .map((direction) => bindings.directionKey[direction]);
 }
 
+export function controlsForSeat(bindings: BindingSet, seat: number): { direction: Direction; key: KeyCode }[] {
+  return ALL_DIRECTIONS.filter((direction) => bindings.directionSeat[direction] === seat)
+    .map((direction) => ({ direction, key: bindings.directionKey[direction] }));
+}
+
 export function inputForSeat(bindings: BindingSet, seat: number, heldKeyMask: number): PilotInput {
   const input: PilotInput = { up: false, down: false, left: false, right: false };
   for (const direction of ALL_DIRECTIONS) {

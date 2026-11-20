@@ -3,7 +3,12 @@ import { maskFromCodes } from '../sim/bindings';
 export class KeyboardState {
   private held = new Set<string>();
   private attached = false;
-  private down = (event: KeyboardEvent) => { if (['KeyW', 'KeyA', 'KeyS', 'KeyD'].includes(event.code)) { event.preventDefault(); this.held.add(event.code); } };
+  private down = (event: KeyboardEvent) => {
+    if (!['KeyW', 'KeyA', 'KeyS', 'KeyD'].includes(event.code)) return;
+    const target = event.target;
+    if (target instanceof HTMLElement && (target.isContentEditable || target.closest('input, textarea, select, [contenteditable="true"]'))) return;
+    event.preventDefault(); this.held.add(event.code);
+  };
   private up = (event: KeyboardEvent) => { this.held.delete(event.code); };
   private blur = () => this.held.clear();
   attach(): void {

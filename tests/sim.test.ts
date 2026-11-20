@@ -7,7 +7,7 @@ import {
 } from '../config/tuning';
 import {
   SeededRandom, activateHoopEffect, createPlaneState, generateHoopBatch, hoopReachable,
-  initialBindings, inputForSeat, isOutsideBounds, keysForSeat, shuffledBindings,
+  initialBindings, inputForSeat, isOutsideBounds, keysForSeat, controlsForSeat, shuffledBindings,
   startRound, stepRound, sweptHoopCrossing, tickPhysics, discardHoopsBehind,
 } from '../src/sim';
 import type { Hoop, PilotInput } from '../src/sim';
@@ -26,7 +26,7 @@ describe('flight simulation', () => {
     expect(tickPhysics(state, neutral).speedKmh).toBeCloseTo(FORWARD_SPEED_CAP_KMH, 8);
   });
 
-  it('runs a deterministic 30-minute bounded course and removes hoops over 200m behind', () => {
+  it('runs a deterministic 30-minute bounded flight while maintaining a compact hoop buffer', () => {
     const simulate = (seed: number) => {
       let state = startRound();
       let placement = { lastZ: 0, predicted: { x: 0, y: 45, vx: 0, vy: 0 }, nextId: 1 };
@@ -36,7 +36,8 @@ describe('flight simulation', () => {
           const batch = generateHoopBatch(random, placement, state.elapsedSeconds, state.speedKmh, 10);
           hoops.push(...batch.hoops); placement = batch.placement; generated += batch.hoops.length;
         }
-        state = stepRound(state, neutral, hoops).state;
+        // This long run exercises flight physics and hoop cleanup; collision outcomes are tested separately.
+        state = stepRound(state, neutral, []).state;
         hoops = discardHoopsBehind(hoops, state.z);
         if (state.phase !== 'playing') break;
       }
@@ -97,6 +98,24 @@ describe('flight simulation', () => {
     expect(sweptHoopCrossing(0, 8, { x: 0, y: 45, z: 0 }, { x: 12, y: 45, z: 8 }, hoop)).toBe(false);
   });
 
+  it('ends the round on the first missed hoop but keeps a successful hoop clear in play', () => {
+    const state = startRound();
+    const missedHoop: Hoop = { id: 1, type: 'standard', x: 12, y: 45, z: 0.5, radius: 2, arrow: null, cleared: false };
+    const missed = stepRound(state, neutral, [missedHoop]);
+    expect(missed.missed).toEqual([missedHoop]);
+    expect(missed.state.phase).toBe('ended');
+    expect(missed.state.score).toBe(0);
+    expect(missedHoop.cleared).toBe(true);
+    expect(stepRound(missed.state, neutral, []).state).toBe(missed.state);
+
+    const clearedHoop: Hoop = { id: 2, type: 'standard', x: 0, y: 45, z: 0.5, radius: 2, arrow: null, cleared: false };
+    const cleared = stepRound(state, neutral, [clearedHoop]);
+    expect(cleared.cleared).toEqual([clearedHoop]);
+    expect(cleared.missed).toEqual([]);
+    expect(cleared.state.phase).toBe('playing');
+    expect(cleared.state.score).toBe(10);
+  });
+
   it('applies cooperative team scoring and booster/magnetic effects without changing forward speed', () => {
     const hoop: Hoop = { id: 1, type: 'booster', x: 0, y: 45, z: 0, radius: 10, arrow: null, cleared: false };
     const boosted = activateHoopEffect(startRound(), hoop);
@@ -119,6 +138,21 @@ describe('flight simulation', () => {
     expect(keysForSeat(four, 3)).toEqual(['KeyD']);
     expect(keysForSeat(four, 4)).toEqual(['KeyA']);
     for (const seat of [1, 2, 3, 4]) expect(Object.values(inputForSeat(four, seat, 0b1111)).filter(Boolean)).toHaveLength(1);
+  });
+
+  it('provides the current direction-to-key mapping for each seat', () => {
+    const two = initialBindings(2);
+    expect(controlsForSeat(two, 1)).toEqual([{ direction: 'up', key: 'KeyW' }, { direction: 'left', key: 'KeyD' }]);
+    expect(controlsForSeat(two, 2)).toEqual([{ direction: 'down', key: 'KeyS' }, { direction: 'right', key: 'KeyA' }]);
+    const shuffled = shuffledBindings(2, new SeededRandom(23), two);
+    for (const seat of [1, 2]) {
+      const mapping = controlsForSeat(shuffled, seat);
+      expect(mapping).toHaveLength(2);
+      for (const { direction, key } of mapping) {
+        expect(shuffled.directionSeat[direction]).toBe(seat);
+        expect(shuffled.directionKey[direction]).toBe(key);
+      }
+    }
   });
 
   it('keeps shuffles different, seat-balanced, and based on a reproducible seed', () => {

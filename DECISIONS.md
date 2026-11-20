@@ -18,3 +18,4 @@
 - A maximum of ten future hoops is used for a compact reliable buffer; booster share is 18% and generated course geometry is seeded for repeatable play.
 - The default STUN server is `stun:stun.l.google.com:19302`; no static TURN secret is put in frontend variables.
 - Supabase's security advisor flags `get_room` as `SECURITY DEFINER` and warns that the intended RLS policies also apply to anonymous signed-in users (who use the `authenticated` role). Review these policies and add CAPTCHA/rate-limit abuse controls before treating the service as production-hardened.
+- Missing any hoop now ends the round immediately and is broadcast as an authoritative `missed_hoop` result. Sound effects are synthesized with Web Audio, can be muted in the HUD, and require no external audio assets.

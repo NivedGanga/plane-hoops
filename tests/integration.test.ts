@@ -68,7 +68,8 @@ describe('simulated host-authoritative multiplayer link', () => {
         const input = inputForSeat(bindings, seat, mask);
         combined.up ||= input.up; combined.down ||= input.down; combined.left ||= input.left; combined.right ||= input.right;
       }
-      const result = stepRound(state, combined, hoops); state = result.state;
+      // Isolate channel convergence from piloting; missed-hoop game-over is tested in sim.test.ts.
+      const result = stepRound(state, combined, []); state = result.state;
       hoops = hoops.filter((hoop) => !hoop.cleared);
       if (hoops.length < 10) { const batch = generateHoopBatch(random, placement, state.elapsedSeconds, state.speedKmh, 10 - hoops.length); placement = batch.placement; hoops.push(...batch.hoops); for (let index = 0; index < clients.length; index++) link.send(index, ++packetSequence, { type: 'hoops', hoops: batch.hoops }, nowMs, true); }
       if (tick % (SIMULATION_HZ / SNAPSHOTS_PER_SECOND) === 0) {

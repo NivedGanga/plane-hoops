@@ -24,5 +24,6 @@ export function stepRound(state: PlaneState, input: PilotInput, hoops: Hoop[]): 
       missed.push(hoop);
     }
   }
+  if (missed.length > 0) next = { ...next, phase: 'ended' };
   return { state: next, cleared, missed };
 }

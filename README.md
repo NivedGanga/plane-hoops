@@ -1,8 +1,8 @@
-# Cloudline: Plane & Hoops
+# Cloudline: Ship & Holes
 
-A cooperative browser flight game: two or four pilots share one plane, one score, and W/A/S/D. The host runs the simulation and each remote pilot connects directly to the host using WebRTC.
+A cooperative browser space-flight game: two or four pilots share one ship, one score, and W/A/S/D. The host runs the simulation and each remote pilot connects directly to the host using WebRTC.
 
-> **Live deployment:** [plane-hoops-supabase.vercel.app](https://plane-hoops-supabase.vercel.app) runs from the `supabase-implementation` branch against `plane-hoops-production`. The 22-test suite passed including live database security checks; real two-browser tests passed for joining, a short flight, matching results, and a saved leaderboard entry. Four-player, TURN, reconnection, and long-running network acceptance remain outstanding. See [DECISIONS.md](DECISIONS.md).
+> **Live deployment:** [plane-hoops-supabase.vercel.app](https://plane-hoops-supabase.vercel.app) runs from `main` against `plane-hoops-production`. The space-game commit [`e6f7d8e`](https://github.com/NivedGanga/plane-hoops/commit/e6f7d8e71ace7f6bc5da7cc05521bda443d48216) passed [GitHub Actions CI](https://github.com/NivedGanga/plane-hoops/actions/runs/44780368341). A real production asteroid collision produced a saved leaderboard row whose score, holes and distance matched the result screen; the unique test row and room were then removed. Latest local verification: typecheck passed, 25 unit/network tests passed, 8 live Supabase security tests were skipped without credentials, the production build passed with a bundle-size warning, and all 6 Playwright browser tests passed. Earlier real two-browser and live RLS checks passed before this redesign. Four-player, current remote-peer, TURN, reconnection, and long-running network acceptance remain outstanding. See [DECISIONS.md](DECISIONS.md).
 
 ## Local setup
 
@@ -35,7 +35,7 @@ Supabase free-tier projects can pause after inactivity, taking the game offline 
 
 ## Vercel and TURN
 
-The separate Vercel project `plane-hoops-supabase` uses the Vite preset, tracks `supabase-implementation` for production, and has `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` configured for production and previews. The repository's `main` branch contains a separate Firebase implementation; do not overwrite or deploy it as this Supabase app. Pull requests should receive preview deployments. The static app is served by Vercel; `api/turn.ts` obtains time-limited TURN credentials server-side when configured.
+The existing Vercel project `plane-hoops-supabase` uses the Vite preset, tracks `main` for production, and retains `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` for production and previews. The static app is served by Vercel; `api/turn.ts` obtains time-limited TURN credentials server-side when configured. Pull requests should receive preview deployments. This space-scene update leaves Supabase room/signaling tables, leaderboard RLS, and TURN configuration intact.
 
 The selected provider is [Metered Open Relay](https://www.metered.ca/tools/openrelay/), which advertises a free monthly allowance. Set `METERED_DOMAIN` (for example `example.metered.live`) and `METERED_SECRET_KEY` as **server-only** Vercel environment variables. The endpoint requests a four-hour credential using Metered's [expiring-credential API](https://www.metered.ca/docs/turnserver-guides/expiring-turn-credentials/); no provider secret is bundled in the browser. Metered warns that newly minted credentials can take up to two minutes to propagate and expire even in an active session. Rotating them and validating relay-only long games are outstanding production tasks.
 

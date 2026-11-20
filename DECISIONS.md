@@ -23,3 +23,6 @@
 - The lane and its boundary/grid visuals are removed; an always-dark procedural starfield, faint generated nebula, fixed key light, and speed-scaled dust establish space without downloaded art.
 - The existing HUD keeps its IDs and metrics, while the control map occupies the middle grid column so score/time cards cannot cover it at the requested desktop widths.
 - Visible game copy uses “ship” and “holes,” with the hint line exactly matching the requested wording; internal hoop identifiers stay unchanged.
+- The ship is built from Three.js primitives and a swept procedural wing, with an engine glow driven by speed; no external model or texture dependency is introduced.
+- Space has a 300 m × 200 m invisible soft-force envelope centered on the existing flight altitude; positions clamp safely at its edge instead of ending a run.
+- Target centers remain in the previous reachable 160 m × 80 m course envelope so waypoints stay fair at 320 km/h; this is not a visible wall or a ship crash boundary.

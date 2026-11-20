@@ -54,23 +54,34 @@ function createDust(count: number): { points: THREE.Points; geometry: THREE.Buff
   return { points, geometry, seeds };
 }
 
-function createPlane(): THREE.Group {
+function createStarship(): THREE.Group {
   const root = new THREE.Group();
-  const bodyMaterial = new THREE.MeshStandardMaterial({ color: 0xf5fbff, metalness: 0.28, roughness: 0.3, emissive: 0x1a3445, emissiveIntensity: 0.5 });
-  const accent = new THREE.MeshStandardMaterial({ color: 0x61e8d1, metalness: 0.25, roughness: 0.28, emissive: 0x12a994, emissiveIntensity: 0.55 });
-  const fuselage = new THREE.Mesh(new THREE.CapsuleGeometry(0.22, 1.08, 4, 10), bodyMaterial);
+  const bodyMaterial = new THREE.MeshStandardMaterial({ color: 0xb9c8d6, metalness: 0.72, roughness: 0.3, emissive: 0x182336, emissiveIntensity: 0.48 });
+  const accent = new THREE.MeshStandardMaterial({ color: 0x58e5da, metalness: 0.55, roughness: 0.25, emissive: 0x087c83, emissiveIntensity: 0.7 });
+  const fuselage = new THREE.Mesh(new THREE.CapsuleGeometry(0.23, 1.18, 4, 12), bodyMaterial);
   fuselage.rotation.x = Math.PI / 2; fuselage.position.z = -0.05; root.add(fuselage);
-  const nose = new THREE.Mesh(new THREE.ConeGeometry(0.21, 0.47, 10), accent);
+  const nose = new THREE.Mesh(new THREE.ConeGeometry(0.21, 0.48, 12), bodyMaterial);
   nose.rotation.x = -Math.PI / 2; nose.position.z = -0.88; root.add(nose);
-  const wing = new THREE.Mesh(new THREE.BoxGeometry(2.05, 0.095, 0.43), accent);
-  wing.position.z = 0.03; root.add(wing);
-  const tailWing = new THREE.Mesh(new THREE.BoxGeometry(0.78, 0.08, 0.25), bodyMaterial);
-  tailWing.position.z = 0.65; root.add(tailWing);
-  const fin = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.3, 0.45), accent);
-  fin.position.set(0, 0.17, 0.53); root.add(fin);
-  const cockpit = new THREE.Mesh(new THREE.SphereGeometry(0.15, 12, 10), new THREE.MeshStandardMaterial({ color: 0x87c6ff, metalness: 0.6, roughness: 0.15, emissive: 0x164a75, emissiveIntensity: 0.8 }));
-  cockpit.scale.set(0.72, 0.8, 1.35); cockpit.position.set(0, 0.19, -0.25); root.add(cockpit);
-  const lamp = new THREE.PointLight(0x63e8d2, 2.0, 5); lamp.position.set(0, 0.25, -0.8); root.add(lamp);
+  const wingShape = new THREE.Shape();
+  wingShape.moveTo(-0.28, -0.48); wingShape.lineTo(-2.42, 0.42); wingShape.lineTo(-2.67, 0.85);
+  wingShape.lineTo(-0.45, 0.42); wingShape.lineTo(0, 0.58); wingShape.lineTo(0.45, 0.42);
+  wingShape.lineTo(2.67, 0.85); wingShape.lineTo(2.42, 0.42); wingShape.lineTo(0.28, -0.48); wingShape.closePath();
+  const wings = new THREE.Mesh(new THREE.ExtrudeGeometry(wingShape, { depth: 0.11, bevelEnabled: true, bevelThickness: 0.035, bevelSize: 0.04, bevelSegments: 1 }), accent);
+  wings.rotation.x = Math.PI / 2; wings.position.y = 0.055; root.add(wings);
+  const tailFin = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.33, 0.48), bodyMaterial);
+  tailFin.position.set(0, 0.19, 0.51); root.add(tailFin);
+  for (const side of [-1, 1]) {
+    const engine = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.14, 0.54, 12), bodyMaterial);
+    engine.rotation.x = Math.PI / 2; engine.position.set(side * 0.32, -0.02, 0.56); root.add(engine);
+    const nozzle = new THREE.Mesh(new THREE.TorusGeometry(0.12, 0.035, 8, 14), accent);
+    nozzle.position.set(side * 0.32, -0.02, 0.84); root.add(nozzle);
+    const exhaust = new THREE.Mesh(new THREE.ConeGeometry(0.12, 0.74, 10), new THREE.MeshBasicMaterial({ color: 0x54e8ff, transparent: true, opacity: 0.66, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false }));
+    exhaust.rotation.x = Math.PI / 2; exhaust.position.set(side * 0.32, -0.02, 1.22); root.add(exhaust);
+    if (side === 1) root.userData.thrusterGlow = exhaust;
+  }
+  const canopy = new THREE.Mesh(new THREE.SphereGeometry(0.2, 16, 12), new THREE.MeshPhysicalMaterial({ color: 0x84d8ff, metalness: 0.68, roughness: 0.13, clearcoat: 1, emissive: 0x16395a, emissiveIntensity: 0.55 }));
+  canopy.scale.set(0.78, 0.55, 1.55); canopy.position.set(0, 0.19, -0.26); root.add(canopy);
+  const lamp = new THREE.PointLight(0x63e8ff, 2.0, 5); lamp.position.set(0, 0.08, -0.9); root.add(lamp);
   return root;
 }
 
@@ -111,7 +122,7 @@ export class FlightWorld {
   readonly scene = new THREE.Scene();
   private camera: THREE.PerspectiveCamera;
   private renderer: THREE.WebGLRenderer;
-  private plane = createPlane();
+  private ship = createStarship();
   private hoops = new Map<number, { mesh: THREE.Group; signature: string }>();
   private starLayers: StarLayer[] = [];
   private dust: THREE.Points;
@@ -138,7 +149,7 @@ export class FlightWorld {
     ];
     for (const layer of this.starLayers) this.scene.add(layer.points);
     const dust = createDust(320); this.dust = dust.points; this.dustGeometry = dust.geometry; this.dustSeeds = dust.seeds; this.scene.add(this.dust);
-    this.scene.add(this.plane);
+    this.scene.add(this.ship);
     window.addEventListener('resize', this.resize);
   }
   private resize = (): void => {
@@ -146,9 +157,15 @@ export class FlightWorld {
     this.camera.aspect = width / height; this.camera.updateProjectionMatrix(); this.renderer.setSize(width, height);
   };
   render(state: PlaneState, activeHoops: Hoop[], timeSeconds: number): void {
-    this.plane.position.set(state.x * SCALE, (state.y - 45) * SCALE, 0);
-    this.plane.rotation.z = -Math.max(-0.28, Math.min(0.28, state.headingX * 2.2));
-    this.plane.rotation.x = Math.max(-0.18, Math.min(0.18, state.headingY * 1.4));
+    this.ship.position.set(state.x * SCALE, (state.y - 45) * SCALE, 0);
+    this.ship.rotation.y = -Math.atan(state.headingX);
+    this.ship.rotation.x = Math.atan(state.headingY);
+    this.ship.rotation.z = -Math.max(-0.28, Math.min(0.28, state.headingX * 1.7));
+    const thruster = this.ship.userData.thrusterGlow as THREE.Mesh;
+    const thrusterMaterial = thruster.material as THREE.MeshBasicMaterial;
+    const speedFactor = Math.max(0, Math.min(1, (state.speedKmh - 200) / 120));
+    thrusterMaterial.opacity = 0.48 + speedFactor * 0.42;
+    thruster.scale.set(1, 1, 0.7 + speedFactor * 0.8);
     this.camera.position.set(state.x * SCALE, (state.y - 45) * SCALE + 2.0, 8.5);
     this.camera.lookAt(state.x * SCALE, (state.y - 45) * SCALE, -9);
     for (const layer of this.starLayers) {

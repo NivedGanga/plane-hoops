@@ -79,17 +79,21 @@ describe('flight simulation', () => {
     }
   });
 
-  it('crashes only after crossing any play-volume boundary', () => {
+  it('treats the 300 by 200 metre outer envelope as a soft limit, never a crash boundary', () => {
     expect(isOutsideBounds({ x: -HALF_WIDTH_M, y: 45 })).toBe(false);
     expect(isOutsideBounds({ x: HALF_WIDTH_M, y: 45 })).toBe(false);
-    expect(isOutsideBounds({ x: 0, y: 10 })).toBe(false);
-    expect(isOutsideBounds({ x: 0, y: 90 })).toBe(false);
-    for (const point of [{ x: -80.001, y: 45 }, { x: 80.001, y: 45 }, { x: 0, y: 9.999 }, { x: 0, y: 90.001 }]) {
-      expect(isOutsideBounds(point)).toBe(true);
+    expect(isOutsideBounds({ x: 0, y: -55 })).toBe(false);
+    expect(isOutsideBounds({ x: 0, y: 145 })).toBe(false);
+    expect(isOutsideBounds({ x: -150.001, y: 45 })).toBe(true);
+    expect(isOutsideBounds({ x: 0, y: 145.001 })).toBe(true);
+    let state: ReturnType<typeof startRound> = { ...startRound(), x: 149.5, vx: 21, phase: 'playing' };
+    for (let tick = 0; tick < 900; tick++) {
+      state = tickPhysics(state, { up: true, down: false, left: false, right: true });
+      expect(state.phase).toBe('playing');
+      expect(state.x).toBeLessThanOrEqual(HALF_WIDTH_M);
+      expect(state.y).toBeLessThanOrEqual(145);
     }
-    const state = { ...startRound(), x: 79.9, vx: 16, phase: 'playing' as const };
-    expect(tickPhysics(state, neutral).phase).toBe('ended');
-    expect(tickPhysics({ ...state, x: 79.5, vx: 0 }, neutral).phase).toBe('playing');
+    expect(state.x).toBeGreaterThan(120);
   });
 
   it('uses a swept segment check so a fast plane cannot skip a hoop', () => {

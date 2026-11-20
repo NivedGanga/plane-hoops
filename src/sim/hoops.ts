@@ -1,11 +1,12 @@
 import {
-  BOOSTER_DURATION_SECONDS, BOOSTER_SHARE, CEILING_Y_M, FIRST_HOOP_MAX_DISTANCE_M,
+  BOOSTER_DURATION_SECONDS, BOOSTER_SHARE, COURSE_CEILING_Y_M, COURSE_GROUND_Y_M,
+  COURSE_HALF_WIDTH_M, FIRST_HOOP_MAX_DISTANCE_M,
   FIRST_HOOP_MIN_DISTANCE_M, FORWARD_SPEED_CAP_KMH, HOOP_RADIUS_END_M,
   HOOP_RADIUS_START_M, HOOP_SPACING_MAX_M, HOOP_SPACING_MIN_M,
   HOST_HOOPS_AHEAD, MAGNETIC_PULL_SECONDS, MAGNETIC_SHARE_END,
   MAGNETIC_SHARE_START, MAX_LATERAL_SPEED_MPS, LATERAL_ACCELERATION_MPS2,
   REACHABILITY_FRACTION_MAX, REACHABILITY_FRACTION_MIN, SIMULATION_HZ,
-  START_Y_M, GROUND_Y_M, HALF_WIDTH_M, FIRST_HOOP_LATERAL_OFFSET_M,
+  START_Y_M, FIRST_HOOP_LATERAL_OFFSET_M,
   HOOP_ROUTE_RADIUS_MIN_M, HOOP_ROUTE_RADIUS_MAX_M,
   HOOP_ROUTE_CENTER_Y_OFFSET_MIN_M, HOOP_ROUTE_CENTER_Y_OFFSET_MAX_M, HOOP_CLEANUP_BEHIND_M,
 } from '../../config/tuning';
@@ -33,8 +34,8 @@ export function hoopReachable(from: ReachState, hoop: Pick<Hoop, 'x' | 'y' | 'z'
   const seconds = travelTimeSeconds(hoop.z - planeZ, speedKmh);
   if (seconds <= 0) return false;
   const dx = hoop.x - from.x; const dy = hoop.y - from.y;
-  const roomX = dx >= 0 ? HALF_WIDTH_M - from.x : HALF_WIDTH_M + from.x;
-  const roomY = dy >= 0 ? CEILING_Y_M - from.y : from.y - GROUND_Y_M;
+  const roomX = dx >= 0 ? COURSE_HALF_WIDTH_M - from.x : COURSE_HALF_WIDTH_M + from.x;
+  const roomY = dy >= 0 ? COURSE_CEILING_Y_M - from.y : from.y - COURSE_GROUND_Y_M;
   const xRange = Math.min(axisReachEnvelope(from.vx, seconds), roomX);
   const yRange = Math.min(axisReachEnvelope(from.vy, seconds), roomY);
   return Math.abs(dx) <= Math.max(0, xRange) * REACHABILITY_FRACTION_MAX + 0.01
@@ -84,8 +85,8 @@ export function generateHoopBatch(
       x = FIRST_HOOP_LATERAL_OFFSET_M; y = routeCenterY;
     } else {
       // One circular corridor step is 60% of the smaller axis envelope at that arrival time.
-      const roomX = Math.min(HALF_WIDTH_M - predicted.x, HALF_WIDTH_M + predicted.x);
-      const roomY = Math.min(predicted.y - GROUND_Y_M, CEILING_Y_M - predicted.y);
+      const roomX = Math.min(COURSE_HALF_WIDTH_M - predicted.x, COURSE_HALF_WIDTH_M + predicted.x);
+      const roomY = Math.min(predicted.y - COURSE_GROUND_Y_M, COURSE_CEILING_Y_M - predicted.y);
       const conservativeEnvelope = Math.min(envelopeX, envelopeY, roomX, roomY);
       const chord = fraction * conservativeEnvelope;
       const phaseStep = 2 * Math.asin(Math.min(1, chord / (2 * routeRadius)));
@@ -102,9 +103,9 @@ export function generateHoopBatch(
     const followingReach = Math.min(
       axisReachEnvelope(0, followingSeconds),
       axisReachEnvelope(0, followingSeconds),
-      HALF_WIDTH_M - Math.abs(x),
-      y - GROUND_Y_M,
-      CEILING_Y_M - y,
+      COURSE_HALF_WIDTH_M - Math.abs(x),
+      y - COURSE_GROUND_Y_M,
+      COURSE_CEILING_Y_M - y,
     );
     const followingChord = fraction * followingReach;
     const followingPhase = routePhase + routeDirection * 2 * Math.asin(Math.min(1, followingChord / (2 * routeRadius)));

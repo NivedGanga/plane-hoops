@@ -19,3 +19,7 @@
 - The default STUN server is `stun:stun.l.google.com:19302`; no static TURN secret is put in frontend variables.
 - Supabase's security advisor flags `get_room` as `SECURITY DEFINER` and warns that the intended RLS policies also apply to anonymous signed-in users (who use the `authenticated` role). Review these policies and add CAPTCHA/rate-limit abuse controls before treating the service as production-hardened.
 - Missing any hoop now ends the round immediately and is broadcast as an authoritative `missed_hoop` result. Sound effects are synthesized with Web Audio, can be muted in the HUD, and require no external audio assets.
+- GitHub `main` had an unrelated Firebase lineage; it is retained as a secondary merge parent while the deployed Supabase tree remains primary, avoiding a force-push and preserving both histories.
+- The lane and its boundary/grid visuals are removed; an always-dark procedural starfield, faint generated nebula, fixed key light, and speed-scaled dust establish space without downloaded art.
+- The existing HUD keeps its IDs and metrics, while the control map occupies the middle grid column so score/time cards cannot cover it at the requested desktop widths.
+- Visible game copy uses “ship” and “holes,” with the hint line exactly matching the requested wording; internal hoop identifiers stay unchanged.

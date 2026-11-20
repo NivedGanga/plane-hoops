@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 
 test('lobby validates names and renders only 2 or 4 seats', async ({ page }) => {
   await page.goto('/');
-  await expect(page.getByRole('heading', { name: /One plane/ })).toBeVisible();
+  await expect(page.getByRole('heading', { name: /One ship/ })).toBeVisible();
   await page.getByRole('button', { name: 'Create flight room' }).click();
   await expect(page.locator('#error-message')).toContainText('Room name');
   await expect(page.locator('[data-count]')).toHaveCount(2);

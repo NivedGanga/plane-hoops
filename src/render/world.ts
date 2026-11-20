@@ -2,13 +2,58 @@ import * as THREE from 'three';
 import type { Hoop, PlaneState } from '../sim/types';
 
 const SCALE = 0.12;
-const colors = { standard: 0x69f0d2, booster: 0xffc76a, magnetic: 0xc39cff } as const;
+const colors = { standard: 0xcbd4df, booster: 0x60e6fb, magnetic: 0xc39cff } as const;
+
+type StarLayer = { points: THREE.Points; parallax: number; drift: number };
+type DustSeed = { x: number; y: number; phase: number };
+
+function seeded(seed: number): () => number {
+  let state = seed >>> 0;
+  return () => { state = (state * 1664525 + 1013904223) >>> 0; return state / 4294967296; };
+}
 
 function lineLoop(points: THREE.Vector3[], color: number, opacity = 0.95): THREE.LineLoop {
   const geometry = new THREE.BufferGeometry().setFromPoints(points);
   const material = new THREE.LineBasicMaterial({ color, transparent: opacity < 1, opacity, toneMapped: false });
   return new THREE.LineLoop(geometry, material);
 }
+
+function createNebula(): THREE.Sprite {
+  const canvas = document.createElement('canvas'); canvas.width = 512; canvas.height = 256;
+  const context = canvas.getContext('2d');
+  if (context) {
+    const glow = (x: number, y: number, radius: number, color: string) => {
+      const gradient = context.createRadialGradient(x, y, 0, x, y, radius);
+      gradient.addColorStop(0, color); gradient.addColorStop(1, 'rgba(5,10,25,0)');
+      context.fillStyle = gradient; context.fillRect(x - radius, y - radius, radius * 2, radius * 2);
+    };
+    glow(180, 135, 175, 'rgba(61,83,153,.19)');
+    glow(285, 110, 145, 'rgba(59,31,104,.16)');
+    glow(365, 150, 115, 'rgba(31,94,118,.11)');
+  }
+  const texture = new THREE.CanvasTexture(canvas); texture.colorSpace = THREE.SRGBColorSpace;
+  const material = new THREE.SpriteMaterial({ map: texture, transparent: true, opacity: 0.52, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false });
+  const sprite = new THREE.Sprite(material); sprite.position.set(-14, 6, -88); sprite.scale.set(84, 42, 1); sprite.renderOrder = -2;
+  return sprite;
+}
+
+function createStars(count: number, seed: number, size: number, color: number, opacity: number): THREE.Points {
+  const random = seeded(seed); const positions: number[] = [];
+  for (let i = 0; i < count; i++) positions.push((random() - 0.5) * 220, (random() - 0.5) * 125, -random() * 125 - 14);
+  const geometry = new THREE.BufferGeometry(); geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  const material = new THREE.PointsMaterial({ color, size, sizeAttenuation: true, transparent: true, opacity, depthWrite: false, toneMapped: false });
+  return new THREE.Points(geometry, material);
+}
+
+function createDust(count: number): { points: THREE.Points; geometry: THREE.BufferGeometry; seeds: DustSeed[] } {
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(count * 3), 3));
+  const random = seeded(0x51ace); const seeds = Array.from({ length: count }, () => ({ x: (random() - 0.5) * 24, y: (random() - 0.5) * 14, phase: random() * 120 }));
+  const material = new THREE.PointsMaterial({ color: 0xa4ccf3, size: 0.055, sizeAttenuation: true, transparent: true, opacity: 0.6, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false });
+  const points = new THREE.Points(geometry, material); points.frustumCulled = false;
+  return { points, geometry, seeds };
+}
+
 function createPlane(): THREE.Group {
   const root = new THREE.Group();
   const bodyMaterial = new THREE.MeshStandardMaterial({ color: 0xf5fbff, metalness: 0.28, roughness: 0.3, emissive: 0x1a3445, emissiveIntensity: 0.5 });
@@ -20,7 +65,7 @@ function createPlane(): THREE.Group {
   const wing = new THREE.Mesh(new THREE.BoxGeometry(2.05, 0.095, 0.43), accent);
   wing.position.z = 0.03; root.add(wing);
   const tailWing = new THREE.Mesh(new THREE.BoxGeometry(0.78, 0.08, 0.25), bodyMaterial);
-  tailWing.position.set(0, 0.08, 0.65); root.add(tailWing);
+  tailWing.position.z = 0.65; root.add(tailWing);
   const fin = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.3, 0.45), accent);
   fin.position.set(0, 0.17, 0.53); root.add(fin);
   const cockpit = new THREE.Mesh(new THREE.SphereGeometry(0.15, 12, 10), new THREE.MeshStandardMaterial({ color: 0x87c6ff, metalness: 0.6, roughness: 0.15, emissive: 0x164a75, emissiveIntensity: 0.8 }));
@@ -68,45 +113,33 @@ export class FlightWorld {
   private renderer: THREE.WebGLRenderer;
   private plane = createPlane();
   private hoops = new Map<number, { mesh: THREE.Group; signature: string }>();
-  private stars: THREE.Points;
+  private starLayers: StarLayer[] = [];
+  private dust: THREE.Points;
+  private dustGeometry: THREE.BufferGeometry;
+  private dustSeeds: DustSeed[];
   constructor(private host: HTMLElement) {
     const width = host.clientWidth || window.innerWidth;
     const height = host.clientHeight || window.innerHeight;
+    this.scene.background = new THREE.Color(0x03050b);
     this.camera = new THREE.PerspectiveCamera(52, width / height, 0.1, 260);
     this.camera.position.set(0, 2.0, 8.5); this.camera.lookAt(0, 0, -9);
-    this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, powerPreference: 'high-performance' });
+    this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: 'high-performance' });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2)); this.renderer.setSize(width, height);
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping; this.renderer.toneMappingExposure = 1.14;
     this.renderer.domElement.className = 'flight-canvas'; host.appendChild(this.renderer.domElement);
-    this.scene.add(new THREE.HemisphereLight(0xc5eaff, 0x21304b, 1.7));
-    const key = new THREE.DirectionalLight(0xfff0dd, 2.6); key.position.set(-4, 10, 8); this.scene.add(key);
-    const rim = new THREE.PointLight(0x4fe2d2, 19, 30); rim.position.set(3, 2, -6); this.scene.add(rim);
-    this.addFlightBounds();
-    const starPositions: number[] = [];
-    let seed = 618033;
-    const random = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
-    for (let i = 0; i < 340; i++) starPositions.push((random() - 0.5) * 70, (random() - 0.5) * 38, -random() * 110 - 15);
-    const starGeo = new THREE.BufferGeometry(); starGeo.setAttribute('position', new THREE.Float32BufferAttribute(starPositions, 3));
-    this.stars = new THREE.Points(starGeo, new THREE.PointsMaterial({ color: 0xb8d7f6, size: 0.09, transparent: true, opacity: 0.62 }));
-    this.scene.add(this.stars);
+    this.scene.add(new THREE.HemisphereLight(0x7184b6, 0x070a12, 0.16));
+    const key = new THREE.DirectionalLight(0xfff1da, 2.7); key.position.set(-4, 10, 8); this.scene.add(key);
+    const rim = new THREE.PointLight(0x7188ff, 12, 38); rim.position.set(3, 2, -8); this.scene.add(rim);
+    this.scene.add(createNebula());
+    this.starLayers = [
+      { points: createStars(560, 618033, 0.085, 0xc7dcff, 0.72), parallax: 0.1, drift: 0.05 },
+      { points: createStars(360, 715043, 0.12, 0x9dbaff, 0.62), parallax: 0.28, drift: 0.11 },
+      { points: createStars(230, 923417, 0.17, 0xe3edff, 0.78), parallax: 0.62, drift: 0.21 },
+    ];
+    for (const layer of this.starLayers) this.scene.add(layer.points);
+    const dust = createDust(320); this.dust = dust.points; this.dustGeometry = dust.geometry; this.dustSeeds = dust.seeds; this.scene.add(this.dust);
     this.scene.add(this.plane);
     window.addEventListener('resize', this.resize);
-  }
-  private addFlightBounds(): void {
-    const width = 80 * SCALE; const floor = (10 - 45) * SCALE; const roof = (90 - 45) * SCALE;
-    const material = new THREE.LineBasicMaterial({ color: 0x83a9ca, transparent: true, opacity: 0.2 });
-    for (let z = -12; z > -126; z -= 12) {
-      const points = [
-        new THREE.Vector3(-width, floor, z), new THREE.Vector3(width, floor, z),
-        new THREE.Vector3(width, roof, z), new THREE.Vector3(-width, roof, z),
-      ];
-      const geo = new THREE.BufferGeometry().setFromPoints([...points, points[0]]);
-      this.scene.add(new THREE.Line(geo, material));
-    }
-    for (const x of [-width, width]) for (const y of [floor, roof]) {
-      const geometry = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(x, y, 0), new THREE.Vector3(x, y, -126)]);
-      this.scene.add(new THREE.Line(geometry, material));
-    }
   }
   private resize = (): void => {
     const width = this.host.clientWidth || window.innerWidth; const height = this.host.clientHeight || window.innerHeight;
@@ -118,7 +151,19 @@ export class FlightWorld {
     this.plane.rotation.x = Math.max(-0.18, Math.min(0.18, state.headingY * 1.4));
     this.camera.position.set(state.x * SCALE, (state.y - 45) * SCALE + 2.0, 8.5);
     this.camera.lookAt(state.x * SCALE, (state.y - 45) * SCALE, -9);
-    this.stars.position.z = (timeSeconds * 1.8) % 22;
+    for (const layer of this.starLayers) {
+      layer.points.position.set(state.x * SCALE * layer.parallax, (state.y - 45) * SCALE * layer.parallax, (state.z * SCALE * layer.drift) % 28);
+    }
+    const density = Math.round(105 + 180 * Math.max(0, Math.min(1, (state.speedKmh - 200) / 120)));
+    this.dustGeometry.setDrawRange(0, density);
+    const positions = this.dustGeometry.getAttribute('position') as THREE.BufferAttribute;
+    for (let i = 0; i < density; i++) {
+      const seed = this.dustSeeds[i]!;
+      const depth = (state.z * 0.72 + seed.phase) % 96;
+      positions.setXYZ(i, state.x * SCALE * 0.62 + seed.x, (state.y - 45) * SCALE * 0.62 + seed.y, -depth * SCALE - 0.5);
+    }
+    positions.needsUpdate = true;
+    this.dust.rotation.z = Math.sin(timeSeconds * 0.12) * 0.012;
     const known = new Set<number>();
     for (const hoop of activeHoops) {
       const distance = hoop.z - state.z;

@@ -26,6 +26,9 @@ test('renders a continuous winding asteroid corridor and keeps impact breakup be
     const wallTriangleIndexCount = segment?.geometry?.index?.count ?? 0;
     const corridorSegmentCount = world.corridorSegments.size;
     const waypointMarkerCount = world.waypointMarkers.size;
+    const segmentChildren = (world.corridorSegments.get('0:1')?.mesh.children ?? []) as Array<{ isInstancedMesh?: boolean; count?: number }>;
+    const boulderCount = segmentChildren.find((child) => child.isInstancedMesh)?.count ?? 0;
+    const approachCueCount = world.approachCues.size;
     world.explode({ x: 0.2, y: 45, z: 1 }, route[0]!.id, state);
     const shipHidden = !world.ship.visible;
     const detachedPartCount = world.explosionPieces.length;
@@ -38,10 +41,12 @@ test('renders a continuous winding asteroid corridor and keeps impact breakup be
     const shipRestored = world.ship.visible;
     world.dispose();
     host.remove();
-    return { wallVertexCount, wallTriangleIndexCount, corridorSegmentCount, waypointMarkerCount, shipHidden, detachedPartCount, shipRestored, hasWhiteFlash, initialShockwaveScale, expandedShockwaveScale, cameraShake };
+    return { wallVertexCount, wallTriangleIndexCount, corridorSegmentCount, waypointMarkerCount, boulderCount, approachCueCount, shipHidden, detachedPartCount, shipRestored, hasWhiteFlash, initialShockwaveScale, expandedShockwaveScale, cameraShake };
   });
   expect(result.corridorSegmentCount).toBe(3);
   expect(result.waypointMarkerCount).toBe(3);
+  expect(result.boulderCount).toBeGreaterThan(15);
+  expect(result.approachCueCount).toBeGreaterThan(0);
   expect(result.wallVertexCount).toBeGreaterThan(300);
   expect(result.wallTriangleIndexCount).toBeGreaterThan(1000);
   expect(result.shipHidden).toBe(true);

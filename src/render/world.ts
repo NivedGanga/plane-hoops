@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { CRASH_CAMERA_SHAKE_SECONDS, ROCK_OUTLINE_POINTS, SPAWN_CORRIDOR_RADIUS_M, START_Y_M } from '../../config/tuning';
+import { corridorAtZ } from '../sim/collision';
 import type { Hoop, PlaneState } from '../sim/types';
 
 const SCALE = 0.12;
@@ -170,7 +171,52 @@ function createCorridorSegment(from: Hoop, to: Hoop): THREE.Group {
   geometry.setIndex(indices); geometry.computeVertexNormals();
   const rockMaterial = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.96, metalness: 0.03, flatShading: true, side: THREE.DoubleSide });
   root.add(new THREE.Mesh(geometry, rockMaterial));
+  // A deterministic halo of faceted boulders sits just beyond the passage lip,
+  // giving the continuous wall a readable asteroid-field silhouette.
+  const boulderRandom = seeded((from.id * 0x27d4eb2d + to.id * 0x165667b1 + 0xb01d) >>> 0);
+  const boulderPalette = [0x87726f, 0x665d78, 0x7a6879, 0x73645d, 0x526273];
+  const boulderCount = Math.max(16, Math.ceil((to.z - from.z) / 12) * 2);
+  const boulders = new THREE.InstancedMesh(
+    new THREE.IcosahedronGeometry(1, 0),
+    new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.98, flatShading: true }),
+    boulderCount,
+  );
+  const position = new THREE.Vector3(); const rotation = new THREE.Quaternion(); const size = new THREE.Vector3();
+  const transform = new THREE.Matrix4();
+  for (let index = 0; index < boulderCount; index++) {
+    const t = boulderRandom();
+    const angle = boulderRandom() * Math.PI * 2;
+    const radius = from.radius + (to.radius - from.radius) * t;
+    const centerX = from.x + (to.x - from.x) * t;
+    const centerY = from.y + (to.y - from.y) * t;
+    const radiusMeters = 3.5 + boulderRandom() * 4.5;
+    const radialDistance = radius + radiusMeters * 1.35 + 3.5 + boulderRandom() * 1.5;
+    position.set(((centerX - from.x) + Math.cos(angle) * radialDistance) * SCALE,
+      ((centerY - from.y) + Math.sin(angle) * radialDistance) * SCALE,
+      -(to.z - from.z) * t * SCALE);
+    rotation.setFromEuler(new THREE.Euler(boulderRandom() * Math.PI, boulderRandom() * Math.PI, boulderRandom() * Math.PI));
+    size.set(radiusMeters * SCALE * (0.78 + boulderRandom() * 0.55), radiusMeters * SCALE * (0.72 + boulderRandom() * 0.6), radiusMeters * SCALE * (0.78 + boulderRandom() * 0.55));
+    transform.compose(position, rotation, size);
+    boulders.setMatrixAt(index, transform);
+    const color = new THREE.Color(boulderPalette[Math.floor(boulderRandom() * boulderPalette.length)]!).multiplyScalar(0.86 + boulderRandom() * 0.28);
+    boulders.setColorAt(index, color);
+  }
+  boulders.computeBoundingSphere();
+  root.add(boulders);
   return root;
+}
+
+function createApproachCue(): THREE.Group {
+  const cue = new THREE.Group();
+  const material = new THREE.MeshBasicMaterial({ color: 0x39f4ff, transparent: true, opacity: 0.92, toneMapped: false });
+  const shape = new THREE.Shape();
+  shape.moveTo(-0.42, 0.22); shape.lineTo(-0.29, 0.36); shape.lineTo(0, 0.06);
+  shape.lineTo(0.29, 0.36); shape.lineTo(0.42, 0.22); shape.lineTo(0, -0.2); shape.closePath();
+  const marker = new THREE.Mesh(new THREE.ShapeGeometry(shape), material);
+  marker.position.z = -0.025;
+  cue.add(marker);
+  cue.add(new THREE.PointLight(0x22eaff, 0.55, 2.8));
+  return cue;
 }
 
 function createWaypointMarker(hoop: Hoop): THREE.Group {
@@ -212,6 +258,7 @@ export class FlightWorld {
   private lastRenderSeconds?: number;
   private corridorSegments = new Map<string, { mesh: THREE.Group; signature: string }>();
   private waypointMarkers = new Map<number, { mesh: THREE.Group; signature: string }>();
+  private approachCues = new Map<number, THREE.Group>();
   private starLayers: StarLayer[] = [];
   private dust: THREE.Points;
   private dustGeometry: THREE.BufferGeometry;
@@ -396,6 +443,23 @@ export class FlightWorld {
       if (!knownSegments.has(key)) { this.scene.remove(item.mesh); disposeObject(item.mesh); this.corridorSegments.delete(key); }
     }
 
+    const knownCues = new Set<number>();
+    const cueSpacing = 18;
+    const firstCue = Math.ceil(Math.max(0, state.z + 8) / cueSpacing);
+    const lastCue = Math.floor((state.z + 120) / cueSpacing);
+    for (let station = firstCue; station <= lastCue; station++) {
+      const z = station * cueSpacing;
+      const sample = corridorAtZ(route, z);
+      if (!sample) continue;
+      knownCues.add(station);
+      let cue = this.approachCues.get(station);
+      if (!cue) { cue = createApproachCue(); this.approachCues.set(station, cue); this.scene.add(cue); }
+      cue.position.set(sample.x * SCALE, (sample.y - 45) * SCALE, -(z - state.z) * SCALE);
+    }
+    for (const [station, cue] of this.approachCues) {
+      if (!knownCues.has(station)) { this.scene.remove(cue); disposeObject(cue); this.approachCues.delete(station); }
+    }
+
     const knownMarkers = new Set<number>();
     for (const hoop of route) {
       const distance = hoop.z - state.z;
@@ -417,6 +481,6 @@ export class FlightWorld {
   }
   dispose(): void {
     window.removeEventListener('resize', this.resize); disposeObject(this.scene);
-    this.corridorSegments.clear(); this.waypointMarkers.clear(); this.renderer.dispose(); this.renderer.domElement.remove();
+    this.corridorSegments.clear(); this.waypointMarkers.clear(); this.approachCues.clear(); this.renderer.dispose(); this.renderer.domElement.remove();
   }
 }

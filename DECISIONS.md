@@ -22,9 +22,15 @@
 - Existing wire record fields, Supabase tables, leaderboard behavior, and migrations are unchanged. The corridor redesign needs no database migration.
 - Ship controls, co-op seat assignments and shuffles, audio, waypoint scoring/effects, leaderboard submission, crash breakup, result delay, and restart remain in place.
 
+## Current HUD and asteroid presentation
+
+- Deterministic low-poly boulders frame the passage just outside its traversable edge; batched instances keep draw calls low. Cyan chevrons mark the route ahead. The generated mesh remains a visual enhancement around the same safe-corridor anchors used by collision.
+- The desktop HUD places the repeating eight-gate segment counter at upper left, live local-player key mappings at top center, a hundredths-precision timer at upper right, and speed at bottom center. Room code, sound toggle, and the host-only End run action stay in a compact lower-left dock.
+- Endless co-op behavior is unchanged: gate progress wraps for display, while cumulative cleared gates and the existing results/leaderboard data remain intact. Room networking, controls and shuffles, sound, scoring, and asteroid-impact crash behavior are preserved.
+
 ## Verification and remaining work
 
-- Current local verification: TypeScript typecheck passed; the production build passed with the existing large-bundle advisory; 25 unit/network/simulation tests passed; all 6 Playwright browser tests passed. Eight optional live Supabase security tests were skipped because credentials were not configured.
+- Current local verification: TypeScript typecheck passed; the production build passed with the existing >500 kB JavaScript bundle advisory; all 27 unit/network/simulation tests passed; all 6 Playwright browser tests passed. Eight optional live Supabase security tests were skipped because credentials were not configured.
 - The long-course tests now include a corridor-following optimal pilot that clears at least 95% of a seeded 1,000-waypoint course, a random-input comparison under the existing threshold, 10,000 seeded wall-contact sweeps, 128 seeded corridor-clearance courses, and a 30-minute collision-free run with bounded active geometry.
 - Earlier two-browser and live RLS checks predate this corridor redesign. Current remote-peer, four-player, ICE recovery, relay-only, reconnect, and long-running live network acceptance still need fresh verification.
 - Production redeployment for the corridor redesign is complete: release commit `28991aa24da4ae82f071eeeff65621c0331554a6` reached READY as deployment `dpl_HFupV1khfA34kVLnmUpWRACyYonf`, and the canonical production alias returned HTTP 200.
@@ -33,6 +39,6 @@
 
 - Superseded: the earlier flight scene used irregular asteroid slabs with circular apertures, slab thickness, and detached decoys. These are replaced by the single continuous corridor and surrounding solid asteroid field described above.
 - Superseded: the earlier waypoint radius range was 9 m to 5.5 m, and collision tested the ship against slab cross-sections. Current waypoint radii and continuous-corridor collision are described above.
-- Superseded: earlier visible copy called the goals “holes”; the current HUD identifies “Waypoints passed” and tells pilots to stay inside the open asteroid corridor.
-- Superseded: the earlier browser test inspected one extruded slab bore. Current browser coverage verifies corridor meshes, waypoint markers, impact breakup and restart, HUD layout/copy, and bounded geometry disposal.
+- Superseded: earlier visible copy called the goals “holes”; the previous HUD used “Waypoints passed.” Current HUD emphasizes eight-gate segment progress and the winding asteroid passage.
+- Superseded: the earlier browser test inspected one extruded slab bore. Current browser coverage verifies corridor meshes, faceted boulders and approach cues, waypoint markers, impact breakup and restart, HUD layout/copy, and bounded geometry disposal.
 - The earlier GitHub Actions CI run for `e6f7d8e71ace7f6bc5da7cc05521bda443d48216` passed. Vercel production branch tracking was switched to `main` before this redesign.

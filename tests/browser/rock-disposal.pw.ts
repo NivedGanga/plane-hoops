@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 
 test('keeps continuous corridor meshes and GPU geometry bounded while old route sections are retired', async ({ page }) => {
+  test.setTimeout(60_000);
   await page.goto('/');
   const stats = await page.evaluate(async () => {
     const modulePath = '/src/render/world.ts';

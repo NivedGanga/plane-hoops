@@ -2,7 +2,7 @@
 
 A cooperative browser space-flight game: two or four pilots share one ship, one score, and W/A/S/D. The host runs the simulation and each remote pilot connects directly to the host using WebRTC.
 
-> **Live deployment:** [plane-hoops-supabase.vercel.app](https://plane-hoops-supabase.vercel.app) uses the existing `main` branch and `plane-hoops-production` Supabase project. Corridor release `28991aa24da4ae82f071eeeff65621c0331554a6` is published to Vercel production and READY; the live alias returned HTTP 200 after publication. Deployment details are recorded in [DECISIONS.md](DECISIONS.md). No multiplayer database migration is needed for the corridor update.
+> **Live deployment:** [plane-hoops-supabase.vercel.app](https://plane-hoops-supabase.vercel.app) uses the existing `main` branch and `plane-hoops-production` Supabase project. HUD/asteroid refresh commit `26230e53dda4e060a4ae923992f7d03b39a2801f` reached READY in Vercel production; the canonical alias returned HTTP 200. Deployment details are recorded in [DECISIONS.md](DECISIONS.md). No multiplayer database migration is needed for this visual update.
 
 ## Local setup
 

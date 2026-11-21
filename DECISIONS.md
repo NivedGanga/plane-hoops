@@ -33,7 +33,7 @@
 - Current local verification: TypeScript typecheck passed; the production build passed with the existing >500 kB JavaScript bundle advisory; all 27 unit/network/simulation tests passed; all 6 Playwright browser tests passed. Eight optional live Supabase security tests were skipped because credentials were not configured.
 - The long-course tests now include a corridor-following optimal pilot that clears at least 95% of a seeded 1,000-waypoint course, a random-input comparison under the existing threshold, 10,000 seeded wall-contact sweeps, 128 seeded corridor-clearance courses, and a 30-minute collision-free run with bounded active geometry.
 - Earlier two-browser and live RLS checks predate this corridor redesign. Current remote-peer, four-player, ICE recovery, relay-only, reconnect, and long-running live network acceptance still need fresh verification.
-- Production redeployment for the corridor redesign is complete: release commit `28991aa24da4ae82f071eeeff65621c0331554a6` reached READY as deployment `dpl_HFupV1khfA34kVLnmUpWRACyYonf`, and the canonical production alias returned HTTP 200.
+- HUD/asteroid refresh commit `26230e53dda4e060a4ae923992f7d03b39a2801f` reached READY as Vercel production deployment `dpl_9oDgFWuJ38Fb8yr145Gya3YYBT49`; the canonical alias `plane-hoops-supabase.vercel.app` returned HTTP 200.
 
 ## Historical design notes
 

@@ -29,8 +29,8 @@ test('desktop HUD stays clear of score cards at 1280, 1920, and 2560 pixels', as
     expect(layout.overlaps, `overlap at ${width}px: ${JSON.stringify(layout.boxes)}`).toEqual([]);
     expect(layout.text).not.toMatch(/(^|\s)(L|FL)(\s|$)/);
     expect(layout.brandVisible).toBe(false);
-    expect(layout.text).toContain('Holes cleared');
-    expect(layout.text).toContain('W A S D · co-op keyboard · thread the holes, avoid the rocks');
+    expect(layout.text).toContain('Waypoints passed');
+    expect(layout.text).toContain('W A S D · co-op keyboard · stay inside the open asteroid corridor');
     await page.screenshot({ path: `test-results/hud-${width}.png`, fullPage: true });
   }
 });

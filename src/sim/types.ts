@@ -29,7 +29,7 @@ export interface Hoop {
   y: number;
   z: number;
   radius: number;
-  thickness: number;
+  /** Irregular outer edge of the surrounding asteroid field at this route station. */
   outline: Vector2[];
   decoy: boolean;
   arrow: PullDirection | null;

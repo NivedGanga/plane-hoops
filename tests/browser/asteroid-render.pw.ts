@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-test('renders a through-hole asteroid and breaks the ship apart on impact', async ({ page }) => {
+test('renders a continuous winding asteroid corridor and keeps impact breakup behavior', async ({ page }) => {
   await page.goto('/');
   const result = await page.evaluate(async () => {
     const modulePath = '/src/render/world.ts';
@@ -11,30 +11,39 @@ test('renders a through-hole asteroid and breaks the ship apart on impact', asyn
     const world = new FlightWorld(host);
     const outline = Array.from({ length: 24 }, (_, index) => {
       const angle = index * Math.PI * 2 / 24;
-      const radius = 15 + (index % 3) * 0.7;
+      const radius = 120 + (index % 3) * 3;
       return { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius };
     });
-    const rock = { id: 777, type: 'standard' as const, x: 0, y: 45, z: 80, radius: 5.5, thickness: 8, outline, decoy: false, arrow: null, cleared: false };
+    const route = [
+      { id: 1, type: 'standard' as const, x: 0, y: 45, z: 80, radius: 7.5, outline, decoy: false, arrow: null, cleared: false },
+      { id: 2, type: 'booster' as const, x: 12, y: 51, z: 180, radius: 7, outline, decoy: false, arrow: null, cleared: false },
+      { id: 3, type: 'magnetic' as const, x: 18, y: 58, z: 280, radius: 6.5, outline, decoy: false, arrow: 'up' as const, cleared: false },
+    ];
     const state = { x: 0, y: 45, z: 0, vx: 0, vy: 0, speedKmh: 210, headingX: 0, headingY: 0, tick: 0, elapsedSeconds: 0, score: 0, phase: 'playing' as const, boosterUntilTick: 0, pullUntilTick: 0, pullDirection: null };
-    world.render(state, [rock], 0);
-    const rockGroup = world.hoops.get(777)?.mesh;
-    const slab = rockGroup?.children[0] as { geometry?: { parameters?: { shapes?: { holes?: unknown[] } } } } | undefined;
-    const throughHoleCount = slab?.geometry?.parameters?.shapes?.holes?.length ?? 0;
-    world.explode({ x: 0.2, y: 45, z: 1 }, rock.id, state);
+    world.render(state, route, 0);
+    const segment = world.corridorSegments.get('0:1')?.mesh.children[0] as { geometry?: { type?: string; attributes?: { position?: { count: number } }; index?: { count: number } } } | undefined;
+    const wallVertexCount = segment?.geometry?.attributes?.position?.count ?? 0;
+    const wallTriangleIndexCount = segment?.geometry?.index?.count ?? 0;
+    const corridorSegmentCount = world.corridorSegments.size;
+    const waypointMarkerCount = world.waypointMarkers.size;
+    world.explode({ x: 0.2, y: 45, z: 1 }, route[0]!.id, state);
     const shipHidden = !world.ship.visible;
     const detachedPartCount = world.explosionPieces.length;
     const hasWhiteFlash = Boolean(world.explosionFlash);
     const initialShockwaveScale = world.shockwave?.scale.x ?? 0;
-    world.render(state, [rock], 0.04);
+    world.render(state, route, 0.04);
     const cameraShake = Math.hypot(world.camera.position.x, world.camera.position.y - 2);
     const expandedShockwaveScale = world.shockwave?.scale.x ?? 0;
     world.reset();
     const shipRestored = world.ship.visible;
     world.dispose();
     host.remove();
-    return { throughHoleCount, shipHidden, detachedPartCount, shipRestored, hasWhiteFlash, initialShockwaveScale, expandedShockwaveScale, cameraShake };
+    return { wallVertexCount, wallTriangleIndexCount, corridorSegmentCount, waypointMarkerCount, shipHidden, detachedPartCount, shipRestored, hasWhiteFlash, initialShockwaveScale, expandedShockwaveScale, cameraShake };
   });
-  expect(result.throughHoleCount).toBe(1);
+  expect(result.corridorSegmentCount).toBe(3);
+  expect(result.waypointMarkerCount).toBe(3);
+  expect(result.wallVertexCount).toBeGreaterThan(300);
+  expect(result.wallTriangleIndexCount).toBeGreaterThan(1000);
   expect(result.shipHidden).toBe(true);
   expect(result.detachedPartCount).toBeGreaterThan(5);
   expect(result.hasWhiteFlash).toBe(true);

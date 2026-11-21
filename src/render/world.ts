@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { CRASH_CAMERA_SHAKE_SECONDS } from '../../config/tuning';
+import { CRASH_CAMERA_SHAKE_SECONDS, ROCK_OUTLINE_POINTS, SPAWN_CORRIDOR_RADIUS_M, START_Y_M } from '../../config/tuning';
 import type { Hoop, PlaneState } from '../sim/types';
 
 const SCALE = 0.12;
@@ -122,78 +122,73 @@ function createStarship(): THREE.Group {
   return root;
 }
 
-function pointInOutline(x: number, y: number, outline: Hoop['outline']): boolean {
-  let inside = false;
-  for (let i = 0, j = outline.length - 1; i < outline.length; j = i++) {
-    const a = outline[i]!; const b = outline[j]!;
-    if ((a.y > y) !== (b.y > y) && x < (b.x - a.x) * (y - a.y) / (b.y - a.y) + a.x) inside = !inside;
+function createCorridorSegment(from: Hoop, to: Hoop): THREE.Group {
+  const root = new THREE.Group();
+  const radialCount = ROCK_OUTLINE_POINTS;
+  const longitudinalSteps = Math.max(2, Math.ceil((to.z - from.z) / 12));
+  const verticesPerStation = radialCount * 2;
+  const positions: number[] = []; const vertexColors: number[] = []; const indices: number[] = [];
+  const baseColor = new THREE.Color(0x536d85); const random = seeded((from.id * 0x9e3779b1 + to.id * 0x85ebca6b) >>> 0);
+
+  for (let step = 0; step <= longitudinalSteps; step++) {
+    const t = step / longitudinalSteps;
+    const centerX = from.x + (to.x - from.x) * t;
+    const centerY = from.y + (to.y - from.y) * t;
+    const radius = from.radius + (to.radius - from.radius) * t;
+    const depth = -(to.z - from.z) * t * SCALE;
+    for (let index = 0; index < radialCount; index++) {
+      const angle = index * Math.PI * 2 / radialCount;
+      const innerX = Math.cos(angle) * radius; const innerY = Math.sin(angle) * radius;
+      const outerA = from.outline[index]!; const outerB = to.outline[index]!;
+      const outerX = outerA.x + (outerB.x - outerA.x) * t; const outerY = outerA.y + (outerB.y - outerA.y) * t;
+      for (const [x, y] of [[innerX, innerY], [outerX, outerY]]) {
+        positions.push(((centerX - from.x) + x) * SCALE, ((centerY - from.y) + y) * SCALE, depth);
+        const grain = 0.66 + random() * 0.62;
+        const color = baseColor.clone().multiplyScalar(grain);
+        vertexColors.push(color.r, color.g, color.b);
+      }
+    }
   }
-  return inside;
+
+  for (let step = 0; step < longitudinalSteps; step++) {
+    for (let index = 0; index < radialCount; index++) {
+      const next = (index + 1) % radialCount;
+      const innerA = step * verticesPerStation + index * 2;
+      const innerB = (step + 1) * verticesPerStation + index * 2;
+      const innerNextA = step * verticesPerStation + next * 2;
+      const innerNextB = (step + 1) * verticesPerStation + next * 2;
+      const outerA = innerA + 1; const outerB = innerB + 1;
+      const outerNextA = innerNextA + 1; const outerNextB = innerNextB + 1;
+      indices.push(innerA, innerB, innerNextB, innerA, innerNextB, innerNextA);
+      indices.push(outerA, outerNextB, outerB, outerA, outerNextA, outerNextB);
+    }
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute('color', new THREE.Float32BufferAttribute(vertexColors, 3));
+  geometry.setIndex(indices); geometry.computeVertexNormals();
+  const rockMaterial = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.96, metalness: 0.03, flatShading: true, side: THREE.DoubleSide });
+  root.add(new THREE.Mesh(geometry, rockMaterial));
+  return root;
 }
 
-function createRock(hoop: Hoop): THREE.Group {
+function createWaypointMarker(hoop: Hoop): THREE.Group {
   const root = new THREE.Group();
-  const color = hoop.decoy ? 0x9299a1 : hoop.type === 'standard' ? 0x6f7b89 : hoop.type === 'booster' ? 0x566f78 : 0x716b80;
-  const stone = new THREE.Shape();
-  hoop.outline.forEach((point, index) => {
-    const x = point.x * SCALE; const y = point.y * SCALE;
-    if (index === 0) stone.moveTo(x, y); else stone.lineTo(x, y);
-  });
-  stone.closePath();
-  const bore = new THREE.Path(); bore.absarc(0, 0, hoop.radius * SCALE, 0, Math.PI * 2, true); stone.holes.push(bore);
-  const thickness = hoop.thickness * SCALE;
-  const frontFace = thickness / 2;
-  const geometry = new THREE.ExtrudeGeometry(stone, {
-    depth: thickness, bevelEnabled: true, bevelSegments: 2,
-    bevelSize: 0.035, bevelThickness: 0.035, curveSegments: 40,
-  });
-  const position = geometry.getAttribute('position'); const vertexColors = new Float32Array(position.count * 3);
-  const baseColor = new THREE.Color(color);
-  for (let index = 0; index < position.count; index++) {
-    const x = position.getX(index) / SCALE; const y = position.getY(index) / SCALE;
-    const grain = 0.78 + (Math.sin(x * 0.71 + hoop.id * 1.37) * Math.cos(y * 0.83 - hoop.id * 0.91) + 1) * 0.115;
-    const vertex = baseColor.clone().multiplyScalar(grain);
-    vertexColors[index * 3] = vertex.r; vertexColors[index * 3 + 1] = vertex.g; vertexColors[index * 3 + 2] = vertex.b;
-  }
-  geometry.setAttribute('color', new THREE.BufferAttribute(vertexColors, 3));
-  const rockMaterial = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.96, metalness: 0.06, flatShading: true });
-  const rock = new THREE.Mesh(geometry, rockMaterial); rock.position.z = -thickness / 2; root.add(rock);
-
-  const rockRandom = seeded(hoop.id * 0x9e3779b1 + 71);
-  const craterMaterial = new THREE.MeshStandardMaterial({ color: 0x222a34, roughness: 1, metalness: 0, transparent: true, opacity: 0.72, side: THREE.DoubleSide, depthWrite: false });
-  const craterCount = 4 + Math.floor(rockRandom() * 4);
-  for (let crater = 0; crater < craterCount; crater++) {
-    for (let attempt = 0; attempt < 12; attempt++) {
-      const angle = rockRandom() * Math.PI * 2;
-      const distance = hoop.radius + 2.6 + rockRandom() * 7;
-      const x = Math.cos(angle) * distance; const y = Math.sin(angle) * distance;
-      if (!pointInOutline(x, y, hoop.outline)) continue;
-      const craterRadius = (0.45 + rockRandom() * 0.95) * SCALE;
-      const pit = new THREE.Mesh(new THREE.CircleGeometry(craterRadius, 14), craterMaterial);
-      pit.position.set(x * SCALE, y * SCALE, frontFace + 0.016); root.add(pit);
-      break;
-    }
-  }
-
-  const rimColor = colors[hoop.type];
-  const stoneRim = new THREE.Mesh(new THREE.TorusGeometry(hoop.radius * SCALE, 0.033, 8, 48), new THREE.MeshStandardMaterial({ color: 0xd0d7de, metalness: 0.64, roughness: 0.31, emissive: rimColor, emissiveIntensity: hoop.decoy ? 0.08 : 0.55 }));
-  stoneRim.position.z = frontFace + 0.025; root.add(stoneRim);
-  if (!hoop.decoy) {
-    const accentRim = new THREE.Mesh(new THREE.TorusGeometry((hoop.radius + 0.62) * SCALE, 0.018, 6, 48), new THREE.MeshBasicMaterial({ color: rimColor, transparent: true, opacity: 0.7, toneMapped: false }));
-    accentRim.position.z = frontFace + 0.021; root.add(accentRim);
-    if (hoop.type === 'booster') {
-      const lightning = new THREE.Shape();
-      lightning.moveTo(0.08, 0.36); lightning.lineTo(-0.19, 0.02); lightning.lineTo(-0.02, 0.02);
-      lightning.lineTo(-0.12, -0.35); lightning.lineTo(0.2, 0.02); lightning.lineTo(0.03, 0.02); lightning.closePath();
-      const bolt = new THREE.Mesh(new THREE.ShapeGeometry(lightning), new THREE.MeshBasicMaterial({ color: 0xfff2ca, side: THREE.DoubleSide, toneMapped: false }));
-      bolt.position.z = frontFace + 0.033; root.add(bolt);
-    } else if (hoop.type === 'magnetic' && hoop.arrow) {
-      const vector = hoop.arrow === 'up' ? new THREE.Vector3(0, 1, 0)
-        : hoop.arrow === 'down' ? new THREE.Vector3(0, -1, 0)
+  const color = colors[hoop.type];
+  const marker = new THREE.Mesh(new THREE.OctahedronGeometry(0.42, 0), new THREE.MeshBasicMaterial({ color, toneMapped: false }));
+  root.add(marker);
+  const glow = new THREE.PointLight(color, 1.8, 4); root.add(glow);
+  const chevronGeometry = new THREE.BufferGeometry().setFromPoints([
+    new THREE.Vector3(-0.62, -0.35, 0), new THREE.Vector3(0, 0, -0.08),
+    new THREE.Vector3(0.62, -0.35, 0),
+  ]);
+  root.add(new THREE.Line(chevronGeometry, new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.74, toneMapped: false })));
+  if (hoop.type === 'magnetic' && hoop.arrow) {
+    const vector = hoop.arrow === 'up' ? new THREE.Vector3(0, 1, 0)
+      : hoop.arrow === 'down' ? new THREE.Vector3(0, -1, 0)
         : hoop.arrow === 'left' ? new THREE.Vector3(-1, 0, 0) : new THREE.Vector3(1, 0, 0);
-      const shaft = new THREE.ArrowHelper(vector, new THREE.Vector3(0, 0, frontFace + 0.04), 0.46, 0xf3eaff, 0.18, 0.14);
-      root.add(shaft);
-    }
+    root.add(new THREE.ArrowHelper(vector, new THREE.Vector3(0, 0.48, 0), 0.52, color, 0.16, 0.13));
   }
   return root;
 }
@@ -215,7 +210,8 @@ export class FlightWorld {
   private explosionElapsed = 0;
   private explosionSeed = 0;
   private lastRenderSeconds?: number;
-  private hoops = new Map<number, { mesh: THREE.Group; signature: string }>();
+  private corridorSegments = new Map<string, { mesh: THREE.Group; signature: string }>();
+  private waypointMarkers = new Map<number, { mesh: THREE.Group; signature: string }>();
   private starLayers: StarLayer[] = [];
   private dust: THREE.Points;
   private dustGeometry: THREE.BufferGeometry;
@@ -373,25 +369,54 @@ export class FlightWorld {
     }
     positions.needsUpdate = true;
     this.dust.rotation.z = Math.sin(timeSeconds * 0.12) * 0.012;
-    const known = new Set<number>();
-    for (const hoop of activeHoops) {
-      const distance = hoop.z - state.z;
-      if (distance < -2 || distance > 1050) continue;
-      known.add(hoop.id);
-      const signature = `${hoop.type}:${hoop.radius}:${hoop.arrow}:${hoop.thickness}:${hoop.decoy}`;
-      let item = this.hoops.get(hoop.id);
+    const route = activeHoops.filter((hoop) => !hoop.decoy).slice().sort((a, b) => a.z - b.z || a.id - b.id);
+    if (route[0]?.id === 1 && state.z < route[0].z) {
+      route.unshift({
+        id: 0, type: 'standard', x: 0, y: START_Y_M, z: 0, radius: SPAWN_CORRIDOR_RADIUS_M,
+        outline: route[0].outline, decoy: false, arrow: null, cleared: true,
+      });
+    }
+
+    const knownSegments = new Set<string>();
+    for (let index = 0; index < route.length - 1; index++) {
+      const from = route[index]!; const to = route[index + 1]!;
+      if (to.z - state.z < -2 || from.z - state.z > 1050) continue;
+      const key = `${from.id}:${to.id}`;
+      const signature = `${from.radius}:${to.radius}:${from.outline.length}:${to.outline.length}`;
+      let item = this.corridorSegments.get(key);
       if (!item || item.signature !== signature) {
         if (item) { this.scene.remove(item.mesh); disposeObject(item.mesh); }
-        item = { mesh: createRock(hoop), signature };
-        this.hoops.set(hoop.id, item); this.scene.add(item.mesh);
+        item = { mesh: createCorridorSegment(from, to), signature };
+        this.corridorSegments.set(key, item); this.scene.add(item.mesh);
+      }
+      item.mesh.position.set(from.x * SCALE, (from.y - 45) * SCALE, -(from.z - state.z) * SCALE);
+      knownSegments.add(key);
+    }
+    for (const [key, item] of this.corridorSegments) {
+      if (!knownSegments.has(key)) { this.scene.remove(item.mesh); disposeObject(item.mesh); this.corridorSegments.delete(key); }
+    }
+
+    const knownMarkers = new Set<number>();
+    for (const hoop of route) {
+      const distance = hoop.z - state.z;
+      if (hoop.id === 0 || hoop.cleared || distance < -2 || distance > 1050) continue;
+      knownMarkers.add(hoop.id);
+      const signature = `${hoop.type}:${hoop.arrow}`;
+      let item = this.waypointMarkers.get(hoop.id);
+      if (!item || item.signature !== signature) {
+        if (item) { this.scene.remove(item.mesh); disposeObject(item.mesh); }
+        item = { mesh: createWaypointMarker(hoop), signature };
+        this.waypointMarkers.set(hoop.id, item); this.scene.add(item.mesh);
       }
       item.mesh.position.set(hoop.x * SCALE, (hoop.y - 45) * SCALE, -distance * SCALE);
-      item.mesh.scale.setScalar(1);
     }
-    for (const [id, item] of this.hoops) if (!known.has(id)) { this.scene.remove(item.mesh); disposeObject(item.mesh); this.hoops.delete(id); }
+    for (const [id, item] of this.waypointMarkers) {
+      if (!knownMarkers.has(id)) { this.scene.remove(item.mesh); disposeObject(item.mesh); this.waypointMarkers.delete(id); }
+    }
     this.renderer.render(this.scene, this.camera);
   }
   dispose(): void {
-    window.removeEventListener('resize', this.resize); disposeObject(this.scene); this.hoops.clear(); this.renderer.dispose(); this.renderer.domElement.remove();
+    window.removeEventListener('resize', this.resize); disposeObject(this.scene);
+    this.corridorSegments.clear(); this.waypointMarkers.clear(); this.renderer.dispose(); this.renderer.domElement.remove();
   }
 }

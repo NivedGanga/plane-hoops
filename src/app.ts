@@ -1,4 +1,4 @@
-import { CLIENT_INTERPOLATION_MS, CRASH_RESULT_DELAY_MS, HOST_HOOPS_AHEAD, HOOP_CLEANUP_BEHIND_M, ICE_RESTART_GRACE_SECONDS, INPUT_RATE_LIMIT_PER_SECOND, ROCK_COLLISION_LOOKAHEAD_M, SHUFFLE_INTERVAL_END_MAX_SECONDS, SHUFFLE_INTERVAL_END_MIN_SECONDS, SHUFFLE_INTERVAL_MAX_SECONDS, SHUFFLE_INTERVAL_MIN_SECONDS, SIM_DT_SECONDS, SIMULATION_HZ, SHUFFLE_MIN_GAP_SECONDS, SHUFFLE_WARNING_SECONDS, SNAPSHOTS_PER_SECOND } from '../config/tuning';
+import { CLIENT_INTERPOLATION_MS, CRASH_RESULT_DELAY_MS, HOST_HOOPS_AHEAD, ICE_RESTART_GRACE_SECONDS, INPUT_RATE_LIMIT_PER_SECOND, ROCK_COLLISION_LOOKAHEAD_M, SHUFFLE_INTERVAL_END_MAX_SECONDS, SHUFFLE_INTERVAL_END_MIN_SECONDS, SHUFFLE_INTERVAL_MAX_SECONDS, SHUFFLE_INTERVAL_MIN_SECONDS, SIM_DT_SECONDS, SIMULATION_HZ, SHUFFLE_MIN_GAP_SECONDS, SHUFFLE_WARNING_SECONDS, SNAPSHOTS_PER_SECOND } from '../config/tuning';
 import { SeededRandom, createPlaneState, generateHoopBatch, initialBindings, inputForSeat, keysForSeat, controlsForSeat, shuffledBindings, sameBindings, startRound, stepRound, type BindingSet, type Direction, type Hoop, discardHoopsBehind, type PlaneState, type RoundSnapshot } from './sim';
 import { SoundEffects } from './audio/sfx';
 import { KeyboardState } from './input/keyboard';
@@ -364,12 +364,13 @@ export class PlaneHoopsApp {
       if (hoop.type === 'magnetic' && hoop.arrow) this.broadcastEvent({ type: 'magnetic-activated', direction: hoop.arrow, untilTick: this.state.pullUntilTick, score: this.state.score, tick: this.state.tick });
     }
     for (const rock of result.passed) if (rock.decoy) this.broadcastEvent({ type: 'rock-removed', rockId: rock.id, tick: this.state.tick });
-    const unpassed = this.hoops.filter((rock) => !rock.cleared);
-    const retained = discardHoopsBehind(unpassed, this.state.z);
+    // Cleared scoring points remain as route anchors until they pass out of the
+    // interpolation window; clients receive a separate reliable removal later.
+    const retained = discardHoopsBehind(this.hoops, this.state.z);
     const retainedIds = new Set(retained.map((rock) => rock.id));
-    for (const rock of unpassed) if (!retainedIds.has(rock.id)) this.broadcastEvent({ type: 'rock-removed', rockId: rock.id, tick: this.state.tick });
+    for (const rock of this.hoops) if (!retainedIds.has(rock.id)) this.broadcastEvent({ type: 'rock-removed', rockId: rock.id, tick: this.state.tick });
     this.hoops = retained;
-    const primaryRocks = this.hoops.filter((rock) => !rock.decoy);
+    const primaryRocks = this.hoops.filter((rock) => !rock.decoy && !rock.cleared);
     const farthestPrimaryZ = primaryRocks.at(-1)?.z ?? this.state.z;
     if (this.state.phase !== 'ended' && (primaryRocks.length < HOST_HOOPS_AHEAD || farthestPrimaryZ - this.state.z < ROCK_COLLISION_LOOKAHEAD_M)) {
       const missing = Math.max(1, HOST_HOOPS_AHEAD - primaryRocks.length);
@@ -437,7 +438,7 @@ export class PlaneHoopsApp {
       this.sounds.roundStart(); this.updateSeatHud();
     } else if (event.type === 'hoop-cleared') {
       this.hoopClears++;
-      this.hoops = this.hoops.filter((rock) => rock.id !== event.hoopId);
+      this.hoops = this.hoops.map((rock) => rock.id === event.hoopId ? { ...rock, cleared: true } : rock);
       this.sounds.hoopCleared(event.hoopType);
     } else if (event.type === 'rock-removed') {
       this.hoops = this.hoops.filter((rock) => rock.id !== event.rockId);
@@ -531,9 +532,9 @@ export class PlaneHoopsApp {
     this.root.querySelector('#hud-score')!.textContent = String(score).padStart(3, '0');
     this.root.querySelector('#result-score')!.textContent = String(score);
     this.root.querySelector('#result-title')!.textContent = this.endReason === 'connection_lost' ? 'Crew link lost.' : crashed ? 'Asteroid impact.' : 'Nice flying, crew.';
-    this.root.querySelector('#result-eyebrow')!.textContent = this.endReason === 'connection_lost' ? 'Connection lost · not submitted' : crashed ? 'SHIP DESTROYED · ROCK CONTACT' : 'Host ended the run';
+    this.root.querySelector('#result-eyebrow')!.textContent = this.endReason === 'connection_lost' ? 'Connection lost · not submitted' : crashed ? 'SHIP DESTROYED · ASTEROID CONTACT' : 'Host ended the run';
     const distance = Math.max(0, Math.round(this.state.z));
-    this.root.querySelector('#leaderboard')!.innerHTML = `<div class="leader-row"><span>Team score</span><strong>${score} pts</strong></div><div class="leader-row"><span>Holes cleared</span><strong>${this.hoopClears}</strong></div><div class="leader-row"><span>Distance</span><strong>${distance.toLocaleString()} m</strong></div><div class="leader-row"><span>Team</span><strong>${escapeHtml(this.roomName)}</strong></div>`;
+    this.root.querySelector('#leaderboard')!.innerHTML = `<div class="leader-row"><span>Team score</span><strong>${score} pts</strong></div><div class="leader-row"><span>Waypoints passed</span><strong>${this.hoopClears}</strong></div><div class="leader-row"><span>Distance</span><strong>${distance.toLocaleString()} m</strong></div><div class="leader-row"><span>Team</span><strong>${escapeHtml(this.roomName)}</strong></div>`;
     if (this.room?.isHost && this.endReason !== 'connection_lost' && this.hostUid) {
       void submitRun(this.hostUid, this.roomName, [...this.names.values()].slice(0,4), score, this.hoopClears, distance)
         .then(() => { this.showToast('Leaderboard record saved.'); this.broadcastEvent({ type: 'leaderboard-updated' }); })
@@ -560,7 +561,7 @@ export class PlaneHoopsApp {
     this.updateLobbyRoom();
   }
 
-  private async renderLeaderboard(): Promise<void> { const node=this.root.querySelector<HTMLElement>('#top-leaderboard'); if(!node)return; const requestId=++this.leaderboardRequestId; try { const uid=await authenticateLeaderboard(); if(!uid){if(requestId===this.leaderboardRequestId)node.textContent='Sign in to view the leaderboard.';return;} const rows=rankLeaderboard(await fetchTop20()); if(requestId!==this.leaderboardRequestId)return; node.innerHTML='<div class="leader-row"><strong>Rank · Team name</strong><strong>Record</strong></div>'+rows.map((row,i)=>`<div class="leader-row"><span>${i+1}. ${escapeHtml(row.team_name)} · ${escapeHtml(row.members.join(', '))}</span><strong>${row.points.toLocaleString()} pts (${row.hoops_cleared} holes)</strong></div>`).join(''); } catch { if(requestId===this.leaderboardRequestId)node.textContent='Leaderboard unavailable.'; } }
+  private async renderLeaderboard(): Promise<void> { const node=this.root.querySelector<HTMLElement>('#top-leaderboard'); if(!node)return; const requestId=++this.leaderboardRequestId; try { const uid=await authenticateLeaderboard(); if(!uid){if(requestId===this.leaderboardRequestId)node.textContent='Sign in to view the leaderboard.';return;} const rows=rankLeaderboard(await fetchTop20()); if(requestId!==this.leaderboardRequestId)return; node.innerHTML='<div class="leader-row"><strong>Rank · Team name</strong><strong>Record</strong></div>'+rows.map((row,i)=>`<div class="leader-row"><span>${i+1}. ${escapeHtml(row.team_name)} · ${escapeHtml(row.members.join(', '))}</span><strong>${row.points.toLocaleString()} pts (${row.hoops_cleared} waypoints)</strong></div>`).join(''); } catch { if(requestId===this.leaderboardRequestId)node.textContent='Leaderboard unavailable.'; } }
 
   private updateHud(state: PlaneState): void {
     if (!this.room) return;

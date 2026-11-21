@@ -7,9 +7,9 @@ import {
   HOST_HOOPS_AHEAD, LATERAL_ACCELERATION_MPS2, MAGNETIC_HOOP_POINTS,
   MAGNETIC_PULL_SECONDS, MAGNETIC_SHARE_END, MAGNETIC_SHARE_START,
   MAX_LATERAL_SPEED_MPS, MAX_SHIP_COLLISION_RADIUS_M, REACHABILITY_FRACTION_MAX,
-  REACHABILITY_FRACTION_MIN, ROCK_DECOY_SHARE_END, ROCK_DECOY_SHARE_START,
-  ROCK_OUTLINE_POINTS, ROCK_SPACING_REDUCTION_M, ROCK_THICKNESS_MAX_M,
-  ROCK_THICKNESS_MIN_M, SIMULATION_HZ, START_Y_M, STANDARD_HOOP_POINTS,
+  REACHABILITY_FRACTION_MIN, ROCK_OUTLINE_POINTS, ROCK_SPACING_REDUCTION_M,
+  ASTEROID_FIELD_OUTER_RADIUS_MIN_M, ASTEROID_FIELD_OUTER_RADIUS_MAX_M,
+  SIMULATION_HZ, START_Y_M, STANDARD_HOOP_POINTS,
   FIRST_HOOP_LATERAL_OFFSET_M,
   START_FORWARD_SPEED_KMH, HOOP_ROUTE_RADIUS_MIN_M, HOOP_ROUTE_RADIUS_MAX_M,
   HOOP_ROUTE_CENTER_Y_OFFSET_MIN_M, HOOP_ROUTE_CENTER_Y_OFFSET_MAX_M,
@@ -46,9 +46,12 @@ export function hoopReachable(from: ReachState, hoop: Pick<Hoop, 'x' | 'y' | 'z'
     && Math.abs(dy) <= Math.max(0, yRange) * REACHABILITY_FRACTION_MAX + 0.01;
 }
 
-export function requiredHoleRadius(): number {
+export function requiredCorridorRadius(): number {
   return MAX_SHIP_COLLISION_RADIUS_M + HOOP_MINIMUM_CLEARANCE_M;
 }
+
+/** Kept as an alias for callers that still describe a route cross-section as a hole. */
+export const requiredHoleRadius = requiredCorridorRadius;
 
 function radiusAt(elapsedSeconds: number): number {
   const difficulty = Math.min(1, elapsedSeconds / 600);
@@ -69,16 +72,16 @@ function hoopType(random: RandomSource, elapsedSeconds: number): Hoop['type'] {
   return 'standard';
 }
 
-function createOutline(random: RandomSource, holeRadius: number): Vector2[] {
-  const minimumRim = holeRadius + 7;
+function createOutline(random: RandomSource): Vector2[] {
   return Array.from({ length: ROCK_OUTLINE_POINTS }, (_, index) => {
     const angle = index * Math.PI * 2 / ROCK_OUTLINE_POINTS;
-    const outerRadius = minimumRim + random.next() * 5;
+    const outerRadius = ASTEROID_FIELD_OUTER_RADIUS_MIN_M
+      + random.next() * (ASTEROID_FIELD_OUTER_RADIUS_MAX_M - ASTEROID_FIELD_OUTER_RADIUS_MIN_M);
     return { x: Math.cos(angle) * outerRadius, y: Math.sin(angle) * outerRadius };
   });
 }
 
-function createRock(
+function createWaypoint(
   random: RandomSource,
   id: number,
   type: Hoop['type'],
@@ -87,12 +90,10 @@ function createRock(
   z: number,
   radius: number,
   arrow: PullDirection | null,
-  decoy = false,
 ): Hoop {
   return {
     id, type, x, y, z, radius,
-    thickness: randomInt(random, ROCK_THICKNESS_MIN_M, ROCK_THICKNESS_MAX_M),
-    outline: createOutline(random, radius), decoy, arrow, cleared: false,
+    outline: createOutline(random), decoy: false, arrow, cleared: false,
   };
 }
 
@@ -171,7 +172,7 @@ export function generateHoopBatch(
     const followingX = routeCenterX + routeRadius * Math.cos(followingPhase);
     const followingY = routeCenterY + routeRadius * Math.sin(followingPhase);
     const type = hoopType(random, elapsedSeconds);
-    const main = createRock(random, nextId++, type, x, y, z, radius, null);
+    const main = createWaypoint(random, nextId++, type, x, y, z, radius, null);
     if (type === 'magnetic') main.arrow = magneticDirection(followingX - x, followingY - y);
 
     if (!hoopReachable(predicted, main, lastZ, speed)) {
@@ -179,15 +180,6 @@ export function generateHoopBatch(
       main.y = predicted.y + (y - predicted.y) * REACHABILITY_FRACTION_MIN;
     }
     hoops.push(main);
-
-    const decoyShare = ROCK_DECOY_SHARE_START + (ROCK_DECOY_SHARE_END - ROCK_DECOY_SHARE_START) * difficulty;
-    if (random.next() < decoyShare) {
-      let dx = followingX - x; let dy = followingY - y;
-      const length = Math.hypot(dx, dy) || 1; dx /= length; dy /= length;
-      const side = random.next() < 0.5 ? -1 : 1;
-      const offset = radius + 12 + MAX_SHIP_COLLISION_RADIUS_M + 3;
-      hoops.push(createRock(random, nextId++, 'standard', x - dy * side * offset, y + dx * side * offset, z, radius, null, true));
-    }
 
     lastZ = z;
     predicted = predictMagneticallyCompensatedExit(main);

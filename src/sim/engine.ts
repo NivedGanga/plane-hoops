@@ -26,6 +26,6 @@ export function stepRound(state: PlaneState, input: PilotInput, hoops: Hoop[]): 
     cleared.push(hoop);
   }
   if (collision) next = { ...next, phase: 'ended' };
-  // Passing the opening is not a crash; only solid-rock contact ends the run.
+  // Passing a scoring station awards its effect; only contact with surrounding rock ends the run.
   return { state: next, cleared, passed, missed: [], collision };
 }

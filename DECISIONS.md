@@ -1,52 +1,37 @@
 # Decisions and current limitations
 
-- Project is dedicated to this game in the only connected Supabase organization, in `ap-south-1`; the connector quoted $0/month.
-- On `plane-hoops-production`, anonymous sign-ins are enabled and a real `signInAnonymously()` call succeeded. The schema and the leaderboard-name normalization correction are applied and recorded; live test accounts and rows were removed afterward.
-- The public GitHub repository is `NivedGanga/plane-hoops`; its existing Vercel project is `plane-hoops-supabase` at https://plane-hoops-supabase.vercel.app. The follow-up requires the production Supabase app on `main`, with its existing URL and public-key environment variables retained.
-- Superseded: `main` originally held an unrelated Firebase lineage, so the first deployment stayed on `supabase-implementation`; the follow-up safely joined both histories locally and moved the Supabase app onto `main` without force-pushing.
-- Historical, superseded: the first GitHub Actions attempt was blocked by an account billing lock; the later run for `e6f7d8e71ace7f6bc5da7cc05521bda443d48216` passed on `main`, so CI is now green.
-- Metered Open Relay is the planned free-tier TURN provider, with server-only `METERED_DOMAIN` and `METERED_SECRET_KEY`; its published free allowance is 20 GB/month. No credentials were available, so STUN-only is the fallback and some networks cannot connect.
-- Metered notes that fresh credentials can take up to two minutes to propagate and expire during ongoing sessions; production TURN rotation and long-session behavior need validation before relying on the fallback-resistant relay.
-- The public Supabase publishable/anon key is expected in the frontend; row-level security is the security boundary. Never expose a service-role key.
-- Leaderboard scores are host-reported and anti-cheat is out of scope.
-- Supabase free-tier projects may pause after inactivity, making the game unavailable until restored.
-- Existing deterministic simulation tests run 30 virtual minutes and a separate 150 ms/5% loss model; these do not prove real browser WebRTC or TURN behavior.
-- Current redesign validation: TypeScript typecheck, 25 unit/network tests, production build, and all 6 Playwright browser tests passed; 8 optional live Supabase security tests were skipped because credentials were not set. Earlier live RLS and real two-browser checks belong to the pre-redesign implementation. Four-player, current remote-peer, ICE recovery, relay-only, and long-session acceptance remain outstanding.
-- A post-run lobby action and authoritative reliable final results were added; silently disconnected remote seats may not be reclaimed because signaling has no peer-presence/leave detection yet.
-- Supabase signaling uses database inserts and Realtime rather than a custom signaling server, to match the requested infrastructure.
-- The connected Supabase migration tool applied both migrations; the local files match its recorded versions: initial `20261119175502` and normalization correction `20261119175612`.
-- At least ten scored holes and the full 1,500 m solid-rock collision horizon stay buffered; reliable add/remove events carry static geometry once while compact snapshots carry only flight state.
-- The default STUN server is `stun:stun.l.google.com:19302`; no static TURN secret is put in frontend variables.
-- Supabase's security advisor flags `get_room` as `SECURITY DEFINER` and warns that the intended RLS policies also apply to anonymous signed-in users (who use the `authenticated` role). Review these policies and add CAPTCHA/rate-limit abuse controls before treating the service as production-hardened.
-- The initial missed-hoop crash rule below was superseded by the 2026-11-20 follow-up: a miss only continues play unless the ship actually contacts rock; crash sound and UI copy now represent rock impact. Sound effects remain synthesized with Web Audio.
-- GitHub `main`'s unrelated Firebase history is retained as a secondary merge parent, while the Supabase implementation is the production tree; this preserves both histories without a force-push and honors the requested Vercel branch.
-- The lane and its boundary/grid visuals are removed; an always-dark procedural starfield, faint generated nebula, fixed key light, and speed-scaled dust establish space without downloaded art.
-- The existing HUD keeps its IDs and metrics, while the control map occupies the middle grid column so score/time cards cannot cover it at the requested desktop widths.
-- Visible game copy uses “ship” and “holes,” with the hint line exactly matching the requested wording; internal hoop identifiers stay unchanged.
-- The ship is built from Three.js primitives and a swept procedural wing, with an engine glow driven by speed; no external model or texture dependency is introduced.
-- Space has a 300 m × 200 m invisible soft-force envelope centered on the existing flight altitude; positions clamp safely at its edge instead of ending a run.
-- Target centers remain in the previous reachable 160 m × 80 m course envelope so waypoints stay fair at 320 km/h; this is not a visible wall or a ship crash boundary.
-- Existing `Hoop` identifiers and database columns remain unchanged; each in-memory/networked target now carries its own seeded 24-point outline, one circular hole, 4–10 m thickness, and a decoy flag, so no database migration is needed.
-- Hole radius shrinks from 9 m to 5.5 m; a conservative 3 m ship-collision envelope leaves at least the required 1.5 m physical clearance at the minimum.
-- Decoys sit beside the validated main route, rising from a 12% to 62% per-hole chance over ten minutes while scored-hole spacing contracts from 120–220 m to 120–170 m.
-- Magnetic-route reachability assumes the cooperative crew can counter-steer the full two-second pull; the magnet arrow continues to point toward the next generated hole.
-- Seven local collision spheres cover the hull, nose/tail, and wings; sweeping their centers through polygonal slab cross-sections tests the visible rock body and through-hole rather than a proxy hoop.
-- A sweep samples at no more than 0.25 m and expands each sample by half a step so fast flight cannot tunnel through the minimum-thickness slab.
-- A scored hole is awarded only after the complete 3 m ship envelope clears the back of the slab, preventing a partially passed hull from scoring before a later impact.
-- The first host-authoritative rock impact event carries rock and ship coordinates so every peer sees the same deterministic hull breakup; a fresh starship is rebuilt on round restart.
-- The ship uses the same 0.12 world-units-per-metre scale as the rock apertures, so the visible 2.67 m wing half-span matches the conservative 3 m collision envelope.
-- Rock transforms stay static instead of pulsing or tumbling, because animated geometry would diverge from the host's authoritative collider.
-- Crash breakup detaches the existing ship mesh parts and adds 96 seeded spark particles for 1.35 s, keeping the effect synchronized and free of external art assets.
-- A desktop browser smoke test inspects the single ExtrudeGeometry bore and verifies the explosion hides the ship and restart rebuilds it.
-- The white flash, expanding shockwave and seeded sparks begin from the reliable host impact event, with a 0.6 s camera shake and a two-second results delay so every peer can see the full blast before the overlay.
-- Late unordered snapshots are ignored once a crash event arrives, because stale flight state must never undo the authoritative terminal tick or score during the blast.
-- Rock batches and retirements use the reliable ordered event channel instead of 20 Hz snapshots, because static 24-point outlines are much larger than changing flight state.
-- Host generation keeps both ten scored targets and 1,500 m of future solids buffered, because the collision broadphase must never see a missing rock before it reaches the player.
-- Acceptance now includes 10,000 seeded 320 km/h minimum-thickness collision approaches and a 30-minute optimal generated-course run, because a single-hole test cannot prove tunneling resistance or long-run fairness.
-- A desktop browser cycles 120 asteroid batches and checks live mesh/GPU geometry counts, because disposed rock assets must not accumulate during an endless run.
-- The game-active state hides the lobby wordmark behind the HUD because its trailing letters caused the visible “L” and “FL” fragments; the brand returns in the lobby.
-- Playwright captures HUD screenshots at 1280, 1920 and 2560 px after bounds and copy assertions because visual acceptance needs rendered evidence at each requested width.
-- Corridor clearance is checked across 128 independent seeds because one randomized course cannot characterize all generated side-rock layouts.
-- Vercel production branch tracking now targets `main`, while the existing Supabase URL/anon key and automatic domain assignment remain intact, because the updated Supabase game must deploy through the requested existing project without changing secrets or TURN configuration.
-- The Vercel production deployment for `e6f7d8e71ace7f6bc5da7cc05521bda443d48216` reached `READY` at https://plane-hoops-supabase.vercel.app, because the redesign must be live from the passing `main` commit.
-- A real two-local-pilot production run ended on asteroid contact at 1,175 m; its HTTP 201 leaderboard upsert (0 points, 0 holes) matched the result and public leaderboard, then only that unique test row and room were removed, because the requested crash-to-leaderboard path needed production verification without retaining test data.
+## Environment and deployment
+
+- The game uses the dedicated `plane-hoops-production` Supabase project in `ap-south-1`. Anonymous sign-ins are enabled, and the existing migrations create the room, signaling, and leaderboard tables and policies.
+- The public GitHub repository is `NivedGanga/plane-hoops`; the existing Vercel project is `plane-hoops-supabase` at https://plane-hoops-supabase.vercel.app. Production is intended to track `main`, with the existing Supabase URL and public-key variables retained.
+- The earlier Supabase implementation was moved onto `main` without force-pushing; its unrelated Firebase history remains a secondary merge parent. The earlier production revision `e6f7d8e71ace7f6bc5da7cc05521bda443d48216` reached READY. A previous two-local-pilot production run verified the crash-to-leaderboard path; only its unique test row and room were removed.
+- The Supabase publishable/anon key is expected in the frontend; row-level security is the access-control boundary. Never expose a service-role key. Leaderboard scores are host-reported and not cheat-proof.
+- Supabase free-tier projects can pause after inactivity. The security advisor has flagged the `SECURITY DEFINER` room lookup and anonymous-user abuse exposure; add CAPTCHA/rate limits and review policies before treating the service as hardened.
+- Metered Open Relay is the planned TURN provider, but credentials are not configured. Clients fall back to public STUN, so some networks may not connect; four-hour credential rotation and relay-only long sessions remain unverified.
+- Supabase Realtime/database inserts are used only for room discovery and WebRTC signaling. The host remains simulation authority; gameplay travels directly over WebRTC data channels.
+
+## Current asteroid corridor design
+
+- The asteroid field is solid everywhere outside one connected, winding flyable corridor. Scored waypoints are anchors along that route, not isolated rings with holes; the legacy `decoy` field remains false and no detached rocks are generated.
+- Each route anchor retains its stable ID, waypoint type and position, corridor radius, and a seeded 24-point outline describing the surrounding asteroid-field boundary. Rendering and collision interpolate the same adjacent anchors, including the spawn-to-first-waypoint transition.
+- The spawn funnel starts with a 24 m radius and tapers to the first scored waypoint. Waypoint radius narrows from 12.5 m to 8 m over the first ten minutes; waypoint spacing contracts from 120–220 m to 120–170 m. Route centers follow a bounded winding path.
+- Seven collision spheres cover the fuselage, nose/tail, wings, and wing tips. Their swept centers are checked against the interpolated safe corridor at 0.25 m maximum sample spacing, with half-step expansion; leaving the passage and touching asteroid ends the run. A missed waypoint alone remains harmless. A waypoint scores only when the full ship envelope clears its station inside its radius.
+- The 3 m ship collision envelope leaves at least the configured 1.5 m minimum physical clearance at the narrowest waypoint radius. The starting funnel is intentionally wider to make the approach fair.
+- Host-generated route anchors and retirements continue to use reliable ordered WebRTC events. State snapshots remain compact; the 1,500 m collision horizon and 450 m cleanup-behind window bound the active route. Geometry segments are disposed as old route sections retire.
+- Existing wire record fields, Supabase tables, leaderboard behavior, and migrations are unchanged. The corridor redesign needs no database migration.
+- Ship controls, co-op seat assignments and shuffles, audio, waypoint scoring/effects, leaderboard submission, crash breakup, result delay, and restart remain in place.
+
+## Verification and remaining work
+
+- Current local verification: TypeScript typecheck passed; the production build passed with the existing large-bundle advisory; 25 unit/network/simulation tests passed; all 6 Playwright browser tests passed. Eight optional live Supabase security tests were skipped because credentials were not configured.
+- The long-course tests now include a corridor-following optimal pilot that clears at least 95% of a seeded 1,000-waypoint course, a random-input comparison under the existing threshold, 10,000 seeded wall-contact sweeps, 128 seeded corridor-clearance courses, and a 30-minute collision-free run with bounded active geometry.
+- Earlier two-browser and live RLS checks predate this corridor redesign. Current remote-peer, four-player, ICE recovery, relay-only, reconnect, and long-running live network acceptance still need fresh verification.
+- Production redeployment for the corridor redesign is the final release step; record the new `main` revision and READY deployment here after publication.
+
+## Historical design notes
+
+- Superseded: the earlier flight scene used irregular asteroid slabs with circular apertures, slab thickness, and detached decoys. These are replaced by the single continuous corridor and surrounding solid asteroid field described above.
+- Superseded: the earlier waypoint radius range was 9 m to 5.5 m, and collision tested the ship against slab cross-sections. Current waypoint radii and continuous-corridor collision are described above.
+- Superseded: earlier visible copy called the goals “holes”; the current HUD identifies “Waypoints passed” and tells pilots to stay inside the open asteroid corridor.
+- Superseded: the earlier browser test inspected one extruded slab bore. Current browser coverage verifies corridor meshes, waypoint markers, impact breakup and restart, HUD layout/copy, and bounded geometry disposal.
+- The earlier GitHub Actions CI run for `e6f7d8e71ace7f6bc5da7cc05521bda443d48216` passed. Vercel production branch tracking was switched to `main` before this redesign.

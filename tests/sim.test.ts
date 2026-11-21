@@ -3,7 +3,8 @@ import {
   ACCEPTANCE_SIM_TICKS, ACCEPTANCE_OPTIMAL_CLEAR_FRACTION, ACCEPTANCE_RANDOM_CLEAR_MAX_FRACTION,
   FORWARD_SPEED_CAP_KMH, HALF_WIDTH_M, SIMULATION_HZ, START_FORWARD_SPEED_KMH, HOOP_CLEANUP_BEHIND_M,
   HOOP_MINIMUM_CLEARANCE_M, MAX_SHIP_COLLISION_RADIUS_M, ROCK_OUTLINE_POINTS,
-  ROCK_THICKNESS_MIN_M, ROCK_THICKNESS_MAX_M, ROCK_COLLISION_LOOKAHEAD_M, HOOP_SPACING_MIN_M, HOOP_SPACING_MAX_M,
+  ASTEROID_FIELD_OUTER_RADIUS_MIN_M, ASTEROID_FIELD_OUTER_RADIUS_MAX_M,
+  ROCK_COLLISION_LOOKAHEAD_M, HOOP_SPACING_MIN_M, HOOP_SPACING_MAX_M,
   HOST_HOOPS_AHEAD,
   SHUFFLE_INTERVAL_END_MIN_SECONDS, SHUFFLE_INTERVAL_END_MAX_SECONDS,
   SPEED_RAMP_SECONDS, LATERAL_ACCELERATION_MPS2, MAX_LATERAL_SPEED_MPS,
@@ -11,7 +12,7 @@ import {
 import {
   SeededRandom, activateHoopEffect, createPlaneState, generateHoopBatch, hoopReachable,
   initialBindings, inputForSeat, isOutsideBounds, keysForSeat, controlsForSeat, shuffledBindings,
-  startRound, stepRound, sweptHoopCrossing, sweptRockCollision, tickPhysics, discardHoopsBehind,
+  startRound, stepRound, sweptHoopCrossing, sweptRockCollision, corridorAtZ, tickPhysics, discardHoopsBehind,
 } from '../src/sim';
 import type { Hoop, PilotInput, PlaneState } from '../src/sim';
 
@@ -20,31 +21,38 @@ function testHoop(overrides: Partial<Hoop> = {}): Hoop {
   const radius = overrides.radius ?? 2;
   const outline = Array.from({ length: 24 }, (_, index) => {
     const angle = index * Math.PI * 2 / 24;
-    return { x: Math.cos(angle) * (radius + 10), y: Math.sin(angle) * (radius + 10) };
+    return { x: Math.cos(angle) * (ASTEROID_FIELD_OUTER_RADIUS_MIN_M + 4 + index % 3), y: Math.sin(angle) * (ASTEROID_FIELD_OUTER_RADIUS_MIN_M + 4 + index % 3) };
   });
-  return { id: 1, type: 'standard', x: 0, y: 45, z: 4, radius, thickness: 4, outline, decoy: false, arrow: null, cleared: false, ...overrides };
+  return { id: 1, type: 'standard', x: 0, y: 45, z: 4, radius, outline, decoy: false, arrow: null, cleared: false, ...overrides };
 }
 
 function activeCourseWindow(rocks: Hoop[], state: ReturnType<typeof startRound>, cursor: { index: number }): Hoop[] {
   let start = cursor.index;
-  while (start < rocks.length && rocks[start]!.z + rocks[start]!.thickness / 2 + MAX_SHIP_COLLISION_RADIUS_M < state.z - HOOP_CLEANUP_BEHIND_M) start++;
+  while (start < rocks.length && rocks[start]!.z < state.z - HOOP_CLEANUP_BEHIND_M) start++;
   let end = start;
-  const ahead = ROCK_COLLISION_LOOKAHEAD_M + ROCK_THICKNESS_MAX_M / 2 + MAX_SHIP_COLLISION_RADIUS_M;
+  const ahead = ROCK_COLLISION_LOOKAHEAD_M + MAX_SHIP_COLLISION_RADIUS_M;
   while (end < rocks.length && rocks[end]!.z - state.z <= ahead) end++;
+  if (end < rocks.length) end++;
   cursor.index = start;
   return rocks.slice(start, end);
 }
 
-function optimalPilotInput(state: PlaneState, target: Hoop, nextTarget: Hoop): PilotInput {
-  const secondsToTarget = Math.max(1 / SIMULATION_HZ, (target.z - state.z) / (state.speedKmh / 3.6));
-  const secondsBetweenTargets = Math.max(1 / SIMULATION_HZ, (nextTarget.z - target.z) / (state.speedKmh / 3.6));
-  const steering = (error: number, velocity: number, nextDisplacement: number): number => {
-    const plannedExitVelocity = nextDisplacement / secondsBetweenTargets;
-    const desiredVelocity = Math.max(-MAX_LATERAL_SPEED_MPS, Math.min(MAX_LATERAL_SPEED_MPS, 2 * error / secondsToTarget - plannedExitVelocity));
-    return desiredVelocity - velocity > 0.7 ? 1 : desiredVelocity - velocity < -0.7 ? -1 : 0;
+function optimalCourseInput(state: PlaneState, route: Hoop[]): PilotInput {
+  const forwardSpeed = state.speedKmh / 3.6;
+  const lookahead = Math.max(30, forwardSpeed * 0.65);
+  const here = corridorAtZ(route, state.z);
+  const ahead = corridorAtZ(route, state.z + lookahead);
+  if (!here) return neutral;
+  const future = ahead ?? here;
+  const desiredVelocity = (position: number, current: number, velocity: number, futurePosition: number): number => {
+    const tangentVelocity = (futurePosition - position) / lookahead * forwardSpeed;
+    return Math.max(-MAX_LATERAL_SPEED_MPS, Math.min(MAX_LATERAL_SPEED_MPS,
+      tangentVelocity + (position - current) * 1.5 - velocity * 0.15));
   };
-  const xCommand = steering(target.x - state.x, state.vx, nextTarget.x - target.x);
-  const yCommand = steering(target.y - state.y, state.vy, nextTarget.y - target.y);
+  const desiredX = desiredVelocity(here.x, state.x, state.vx, future.x);
+  const desiredY = desiredVelocity(here.y, state.y, state.vy, future.y);
+  const command = (desired: number, velocity: number): number => desired - velocity > 0.7 ? 1 : desired - velocity < -0.7 ? -1 : 0;
+  const xInput = command(desiredX, state.vx); const yInput = command(desiredY, state.vy);
   const pull = state.tick + 1 < state.pullUntilTick ? state.pullDirection : null;
   const pullX = pull === 'right' ? 1 : pull === 'left' ? -1 : 0;
   const pullY = pull === 'up' ? 1 : pull === 'down' ? -1 : 0;
@@ -56,15 +64,17 @@ function optimalPilotInput(state: PlaneState, target: Hoop, nextTarget: Hoop): P
     }
     return best;
   };
-  const xInput = counterSteer(xCommand, pullX); const yInput = counterSteer(yCommand, pullY);
-  return { right: xInput > 0, left: xInput < 0, up: yInput > 0, down: yInput < 0 };
+  const xCommand = counterSteer(xInput, pullX); const yCommand = counterSteer(yInput, pullY);
+  return { right: xCommand > 0, left: xCommand < 0, up: yCommand > 0, down: yCommand < 0 };
 }
 
 describe('flight simulation', () => {
   it('holds difficulty progression to the 10-minute endpoint and tunes shuffle intervals to 10-14s', () => {
     const early = generateHoopBatch(new SeededRandom(17), { lastZ: 0, predicted: { x: 0, y: 45, vx: 0, vy: 0 }, nextId: 1 }, 0, 210, 1).hoops[0]!;
     const late = generateHoopBatch(new SeededRandom(17), { lastZ: 0, predicted: { x: 0, y: 45, vx: 0, vy: 0 }, nextId: 1 }, 600, 320, 1).hoops[0]!;
-    expect(early.radius).toBe(9); expect(late.radius).toBe(5.5);
+    expect(early.radius).toBe(12.5); expect(late.radius).toBe(8);
+    expect(corridorAtZ([early], 0)?.radius).toBe(24);
+    expect(corridorAtZ([early], early.z)?.radius).toBe(12.5);
     expect(SHUFFLE_INTERVAL_END_MIN_SECONDS).toBe(10); expect(SHUFFLE_INTERVAL_END_MAX_SECONDS).toBe(14);
     let state = startRound();
     for (let i = 0; i < 600 * SIMULATION_HZ; i++) state = tickPhysics(state, neutral);
@@ -149,7 +159,7 @@ describe('flight simulation', () => {
     expect(sweptHoopCrossing(0, 8, { x: 0, y: 45, z: 0 }, { x: 12, y: 45, z: 8 }, hoop)).toBe(false);
   });
 
-  it('crashes only on rock contact, scores after a safe hole exit, and ignores a fully missed rock', () => {
+  it('scores a safe corridor waypoint, crashes on rock contact, and permits a safe off-center miss', () => {
     const rock = testHoop({ id: 1, z: 0.5, radius: 5.5 });
     let safeState = startRound(); let clearEvents = 0;
     for (let tick = 0; tick < 20 && !rock.cleared; tick++) {
@@ -162,40 +172,40 @@ describe('flight simulation', () => {
     expect(safeState.score).toBe(10);
 
     const contactRock = testHoop({ id: 2, z: 0.5, radius: 5.5 });
-    const contact = stepRound({ ...startRound(), x: 5.7 }, neutral, [contactRock]);
+    const contact = stepRound({ ...startRound(), x: 5.7 }, neutral, [testHoop({ id: 1, z: -10, radius: 5.5 }), contactRock]);
     expect(contact.collision?.rockId).toBe(contactRock.id);
     expect(contact.state.phase).toBe('ended');
     expect(contact.state.score).toBe(0);
     expect(contact.missed).toEqual([]);
 
-    const farAwayRock = testHoop({ id: 3, z: 0.5, radius: 5.5 });
-    const miss = stepRound({ ...startRound(), x: 40 }, neutral, [farAwayRock]);
+    const offCenterWaypoint = testHoop({ id: 3, z: 0.5, radius: 5.5 });
+    const miss = stepRound({ ...startRound(), x: 2.6 }, neutral, [testHoop({ id: 2, z: -10, radius: 5.5 }), offCenterWaypoint]);
     expect(miss.collision).toBeNull();
     expect(miss.state.phase).toBe('playing');
     expect(miss.state.score).toBe(0);
     expect(miss.missed).toEqual([]);
   });
 
-  it('sweeps the compound hull continuously through thick slabs and picks the earliest stable rock id', () => {
+  it('sweeps the compound hull through a continuous bend and reports the corridor segment id', () => {
     const from = { ...startRound(), z: -6, x: 5.7 };
     const to = { ...from, z: 6 };
     const safeFrom = { ...from, x: 0 };
     const safeTo = { ...to, x: 0 };
-    const rock = testHoop({ id: 9, z: 0, radius: 5.5, thickness: 4 });
-    expect(sweptRockCollision(from, to, [rock])?.time).toBeDefined();
-    expect(sweptRockCollision(safeFrom, safeTo, [rock])).toBeNull();
-    expect(sweptRockCollision(from, to, [rock, { ...rock, id: 2 }])?.rockId).toBe(2);
-    expect(sweptRockCollision(from, to, [testHoop({ id: 10, z: 2000, radius: 5.5 })])).toBeNull();
+    const corridor = [testHoop({ id: 1, z: -100, radius: 5.5 }), testHoop({ id: 2, z: 100, radius: 5.5 })];
+    expect(sweptRockCollision(from, to, corridor)?.time).toBeDefined();
+    expect(sweptRockCollision(safeFrom, safeTo, corridor)).toBeNull();
+    expect(sweptRockCollision(from, to, [...corridor, { ...corridor[1]!, id: 3 }])?.rockId).toBe(2);
+    expect(sweptRockCollision(from, to, [testHoop({ id: 10, z: 2000, radius: 5.5 }), testHoop({ id: 11, z: 2200, radius: 5.5 })])).toBeNull();
   });
 
-  it('detects all 10,000 random 320 km/h approaches to minimum-thickness solid rock faces', () => {
+  it('detects all 10,000 random 320 km/h approaches outside the corridor boundary', () => {
     const random = new SeededRandom(0x3204);
-    const rock = testHoop({ id: 42, z: 100, radius: 5.5, thickness: ROCK_THICKNESS_MIN_M });
+    const waypoint = testHoop({ id: 1, z: 100, radius: 5.5 });
     const tickDistance = FORWARD_SPEED_CAP_KMH / 3.6 / SIMULATION_HZ;
     for (let approach = 0; approach < 10_000; approach++) {
-      const from = { ...startRound(), x: 8.2 + random.next() * 0.3, y: 44.8 + random.next() * 0.4, z: rock.z - 4, speedKmh: FORWARD_SPEED_CAP_KMH };
+      const from = { ...startRound(), x: 8.2 + random.next() * 0.3, y: 44.8 + random.next() * 0.4, z: waypoint.z - 4, speedKmh: FORWARD_SPEED_CAP_KMH };
       const to = { ...from, x: from.x + (random.next() - 0.5) * 0.12, y: from.y + (random.next() - 0.5) * 0.12, z: from.z + tickDistance, tick: 1 };
-      expect(sweptRockCollision(from, to, [rock])?.rockId).toBe(rock.id);
+      expect(sweptRockCollision(from, to, [waypoint])?.rockId).toBe(waypoint.id);
     }
   });
 
@@ -251,7 +261,7 @@ describe('flight simulation', () => {
     }
   });
 
-  it('generates 1,000 primary holes with legal rock geometry and chain reachability', () => {
+  it('generates 1,000 scored corridor waypoints with legal clearance and surrounding field geometry', () => {
     const random = new SeededRandom(0xc0ffee);
     let placement = { lastZ: 0, predicted: { x: 0, y: 45, vx: 0, vy: 0 }, nextId: 1 };
     let checked = 0;
@@ -260,13 +270,12 @@ describe('flight simulation', () => {
       let previousZ = placement.lastZ; let previous = placement.predicted;
       for (const hoop of batch.hoops.filter((item) => !item.decoy)) {
         expect(hoopReachable(previous, hoop, previousZ, 260)).toBe(true);
-        expect(hoop.radius).toBeGreaterThanOrEqual(5.5);
-        expect(hoop.radius).toBeLessThanOrEqual(9);
+        expect(hoop.radius).toBeGreaterThanOrEqual(8);
+        expect(hoop.radius).toBeLessThanOrEqual(12.5);
         expect(hoop.radius - MAX_SHIP_COLLISION_RADIUS_M).toBeGreaterThanOrEqual(HOOP_MINIMUM_CLEARANCE_M);
-        expect(hoop.thickness).toBeGreaterThanOrEqual(ROCK_THICKNESS_MIN_M);
-        expect(hoop.thickness).toBeLessThanOrEqual(ROCK_THICKNESS_MAX_M);
         expect(hoop.outline).toHaveLength(ROCK_OUTLINE_POINTS);
-        expect(hoop.outline.every((point) => Math.hypot(point.x, point.y) > hoop.radius + 6)).toBe(true);
+        expect(hoop.outline.every((point) => Math.hypot(point.x, point.y) >= ASTEROID_FIELD_OUTER_RADIUS_MIN_M
+          && Math.hypot(point.x, point.y) <= ASTEROID_FIELD_OUTER_RADIUS_MAX_M)).toBe(true);
         if (previousZ > 0) expect(hoop.z - previousZ).toBeGreaterThanOrEqual(HOOP_SPACING_MIN_M);
         if (previousZ > 0) expect(hoop.z - previousZ).toBeLessThanOrEqual(HOOP_SPACING_MAX_M);
         if (hoop.type === 'magnetic') expect(['up', 'down', 'left', 'right']).toContain(hoop.arrow);
@@ -277,54 +286,52 @@ describe('flight simulation', () => {
     }
   });
 
-  it('increases side-rock density and shortens primary spacing across the first ten minutes', () => {
+  it('narrows the open corridor and shortens waypoint spacing across the first ten minutes', () => {
     const collect = (elapsedSeconds: number, speed: number) => {
       const random = new SeededRandom(0xdecafbad);
       let placement = { lastZ: 0, predicted: { x: 0, y: 45, vx: 0, vy: 0 }, nextId: 1 };
-      const main: Hoop[] = []; const decoys: Hoop[] = [];
+      const main: Hoop[] = [];
       while (main.length < 80) {
         const batch = generateHoopBatch(random, placement, elapsedSeconds, speed, Math.min(10, 80 - main.length));
-        main.push(...batch.hoops.filter((hoop) => !hoop.decoy));
-        decoys.push(...batch.hoops.filter((hoop) => hoop.decoy));
+        main.push(...batch.hoops);
         placement = batch.placement;
       }
-      return { main, decoys };
+      return main;
     };
     const early = collect(0, 210); const late = collect(600, 320);
     const averageSpacing = (course: Hoop[]) => course.slice(1).reduce((sum, hoop, index) => sum + hoop.z - course[index]!.z, 0) / (course.length - 1);
-    expect(late.decoys.length).toBeGreaterThan(early.decoys.length * 2);
-    expect(averageSpacing(late.main)).toBeLessThan(averageSpacing(early.main));
-    for (const { main, decoys } of [early, late]) for (const decoy of decoys) {
-      const target = main.find((hoop) => hoop.z === decoy.z)!;
-      const centerSeparation = Math.hypot(decoy.x - target.x, decoy.y - target.y);
-      const outerBound = Math.max(...decoy.outline.map((point) => Math.hypot(point.x, point.y)));
-      expect(centerSeparation - outerBound - MAX_SHIP_COLLISION_RADIUS_M).toBeGreaterThan(0);
-    }
+    expect(late[0]!.radius).toBeLessThan(early[0]!.radius);
+    expect(averageSpacing(late)).toBeLessThan(averageSpacing(early));
   });
 
-  it('keeps every reachable centerline clear of side-rock solids across 128 seeded layouts', () => {
-    let checkedDecoys = 0;
+  it('keeps one connected winding corridor safe and detects its wall across 128 seeded courses', () => {
+    let checkedIntervals = 0;
     for (let seed = 1; seed <= 128; seed++) {
       const random = new SeededRandom(seed * 7919);
-      const placement = { lastZ: 0, predicted: { x: 0, y: 45, vx: 0, vy: 0 }, nextId: 1 };
-      const batch = generateHoopBatch(random, placement, 600, 320, HOST_HOOPS_AHEAD);
-      const primary = batch.hoops.filter((rock) => !rock.decoy);
-      const decoys = batch.hoops.filter((rock) => rock.decoy);
-      expect(primary).toHaveLength(HOST_HOOPS_AHEAD);
-      let previous = placement.predicted; let previousZ = placement.lastZ;
-      for (const target of primary) {
-        expect(hoopReachable(previous, target, previousZ, 320)).toBe(true);
-        previous = { x: target.x, y: target.y, vx: 0, vy: 0 }; previousZ = target.z;
+      let placement = { lastZ: 0, predicted: { x: 0, y: 45, vx: 0, vy: 0 }, nextId: 1 };
+      const route: Hoop[] = [];
+      while (route.length < HOST_HOOPS_AHEAD * 2) {
+        const batch = generateHoopBatch(random, placement, 600, 320, HOST_HOOPS_AHEAD);
+        route.push(...batch.hoops); placement = batch.placement;
       }
-      for (const decoy of decoys) {
-        const target = primary.find((rock) => rock.z === decoy.z)!;
-        const outerBound = Math.max(...decoy.outline.map((point) => Math.hypot(point.x, point.y)));
-        const closestCenterlineClearance = Math.hypot(decoy.x - target.x, decoy.y - target.y) - outerBound - MAX_SHIP_COLLISION_RADIUS_M;
-        expect(closestCenterlineClearance).toBeGreaterThan(0);
-        checkedDecoys++;
+      for (let index = 0; index < route.length - 1; index++) {
+        const from = route[index]!; const to = route[index + 1]!;
+        for (const fraction of [0.1, 0.5, 0.9]) {
+          const z = from.z + (to.z - from.z) * fraction;
+          const corridor = corridorAtZ(route, z);
+          expect(corridor).not.toBeNull();
+          const centerline = { ...startRound(), x: corridor!.x, y: corridor!.y, z };
+          expect(sweptRockCollision(centerline, centerline, route)).toBeNull();
+          const wallGrazing = {
+            ...centerline,
+            x: corridor!.x + corridor!.radius - MAX_SHIP_COLLISION_RADIUS_M + 0.5,
+          };
+          expect(sweptRockCollision(wallGrazing, wallGrazing, route)).not.toBeNull();
+          checkedIntervals++;
+        }
       }
     }
-    expect(checkedDecoys).toBeGreaterThan(500);
+    expect(checkedIntervals).toBeGreaterThan(5_000);
   });
 
   it('optimal lookahead clears at least 95% while random held keys clear under 10% of a seeded 1,000-hoop course', () => {
@@ -342,7 +349,7 @@ describe('flight simulation', () => {
       courseSpeed = Math.min(FORWARD_SPEED_CAP_KMH, START_FORWARD_SPEED_KMH + (FORWARD_SPEED_CAP_KMH - START_FORWARD_SPEED_KMH) * Math.min(1, courseElapsed / SPEED_RAMP_SECONDS));
       placement = batch.placement;
     }
-    // The optimal pilot brakes toward each center while following the speed-ramped route through main and decoy rocks.
+    // The optimal pilot follows the continuous centerline while the random pilot holds keys blindly.
     const optimalRocks = course.map((hoop) => ({ ...hoop, cleared: false }));
     let optimal = startRound(); let optimalHoops = optimalRocks.filter((hoop) => !hoop.decoy);
     const optimalWindow = { index: 0 };
@@ -352,8 +359,9 @@ describe('flight simulation', () => {
       if (!target) break;
       const nextTarget = optimalHoops[Math.min(targetIndex + 1, optimalHoops.length - 1)];
       if (!nextTarget) break;
-      const input = optimalPilotInput(optimal, target, nextTarget);
-      const result = stepRound(optimal, input, activeCourseWindow(optimalRocks, optimal, optimalWindow));
+      const input = optimalCourseInput(optimal, optimalRocks);
+      const active = activeCourseWindow(optimalRocks, optimal, optimalWindow);
+      const result = stepRound(optimal, input, active);
       for (const hoop of result.cleared) optimalCleared.add(hoop.id);
       optimal = result.state;
       while (targetIndex < optimalHoops.length && optimalHoops[targetIndex].cleared) targetIndex++;
@@ -371,7 +379,7 @@ describe('flight simulation', () => {
     const randomRate = randomCleared.size / 1000;
     expect(optimalRate).toBeGreaterThanOrEqual(ACCEPTANCE_OPTIMAL_CLEAR_FRACTION);
     expect(randomRate).toBeLessThan(ACCEPTANCE_RANDOM_CLEAR_MAX_FRACTION);
-  });
+  }, 45_000);
 
   it('flies an optimal generated course for 30 minutes without impact and keeps the collision window bounded', () => {
     const random = new SeededRandom(0x30f1);
@@ -396,10 +404,11 @@ describe('flight simulation', () => {
       if (!target || !next) break;
       const active = activeCourseWindow(rocks, state, cursor);
       maximumActiveRocks = Math.max(maximumActiveRocks, active.length);
-      state = stepRound(state, optimalPilotInput(state, target, next), active).state;
+      const result = stepRound(state, optimalCourseInput(state, rocks), active);
+      state = result.state;
       if (state.phase !== 'playing') break;
     }
-    const retiredRockCount = generated.filter((rock) => rock.z + rock.thickness / 2 + MAX_SHIP_COLLISION_RADIUS_M < state.z - HOOP_CLEANUP_BEHIND_M).length;
+    const retiredRockCount = generated.filter((rock) => rock.z < state.z - HOOP_CLEANUP_BEHIND_M).length;
     expect(state.tick).toBe(30 * 60 * SIMULATION_HZ);
     expect(state.phase).toBe('playing');
     expect(maximumActiveRocks).toBeLessThan(32);
